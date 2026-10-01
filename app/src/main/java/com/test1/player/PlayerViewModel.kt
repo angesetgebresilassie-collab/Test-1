@@ -11,11 +11,11 @@ import kotlinx.coroutines.launch
 data class PlayerState(val current:Song?=null,val metadata:CachedMetadata?=null,val playing:Boolean=false)
 class PlayerViewModel(app:Application):AndroidViewModel(app){
  private val repo=LibraryRepository(app.contentResolver);private val meta=MetadataRepository(MetadataCache(app))
- val songs=MutableStateFlow<List<Song>>(emptyList());val state=MutableStateFlow(PlayerState()).asStateFlow();private var c:MediaController?=null
- init{load();viewModelScope.launch{c=MediaController.Builder(app,SessionToken(app,ComponentName(app,PlaybackService::class.java))).buildAsync().get();c?.addListener(object:androidx.media3.common.Player.Listener{override fun onIsPlayingChanged(v:Boolean){val s=state.value; (state as MutableStateFlow).value=s.copy(playing=v)};override fun onMediaItemTransition(i:androidx.media3.common.MediaItem?,r:Int){songs.value.firstOrNull{it.id.toString()==i?.mediaId}?.let{playMetadata(it)}}})}}
+ val songs=MutableStateFlow<List<Song>>(emptyList());private val _state=MutableStateFlow(PlayerState());val state=_state.asStateFlow();private var c:MediaController?=null
+ init{load();viewModelScope.launch{c=MediaController.Builder(app,SessionToken(app,ComponentName(app,PlaybackService::class.java))).buildAsync().get();c?.addListener(object:androidx.media3.common.Player.Listener{override fun onIsPlayingChanged(v:Boolean){val s=state.value; _state.value=s.copy(playing=v)};override fun onMediaItemTransition(i:androidx.media3.common.MediaItem?,r:Int){songs.value.firstOrNull{it.id.toString()==i?.mediaId}?.let{playMetadata(it)}}})}}
  fun load(){viewModelScope.launch{songs.value=repo.songs()}}
  fun play(s:Song){viewModelScope.launch{c?.setMediaItems(songs.value.map{it.toMediaItem()},songs.value.indexOf(s),0);c?.play();playMetadata(s)}}
  fun toggle(){c?.let{if(it.isPlaying)it.pause()else it.play()}}
- private fun playMetadata(s:Song){viewModelScope.launch{(state as MutableStateFlow).value=state.value.copy(current=s,metadata=meta.enrich(s))}}
+ private fun playMetadata(s:Song){viewModelScope.launch{_state.value=state.value.copy(current=s,metadata=meta.enrich(s))}}
  override fun onCleared(){c?.release();super.onCleared()}
 }
