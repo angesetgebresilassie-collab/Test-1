@@ -1,6 +1,12 @@
 package com.test1.player
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -27,6 +33,10 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -94,7 +104,7 @@ fun ArtworkImage(bitmap: ImageBitmap?, size: Dp, corner: Dp = 14.dp) {
 
 /** Full-screen backdrop the glass refracts: current artwork (or a gradient) under a dark scrim. */
 @Composable
-private fun AmbientBackground(art: ImageBitmap?) {
+fun AmbientBackground(art: ImageBitmap?) {
     Box(
         Modifier
             .fillMaxSize()
@@ -122,6 +132,7 @@ private fun AmbientBackground(art: ImageBitmap?) {
 fun Home(songs: List<Song>, st: PlayerState, vm: PlayerViewModel) {
     val backdrop = rememberLayerBackdrop()
     val currentArt = rememberArtwork(st.current, st.metadata?.artworkUrl)
+    var expanded by remember { mutableStateOf(false) }
 
     Box(Modifier.fillMaxSize()) {
         Box(Modifier.layerBackdrop(backdrop).fillMaxSize()) {
@@ -156,11 +167,22 @@ fun Home(songs: List<Song>, st: PlayerState, vm: PlayerViewModel) {
                 st = st,
                 backdrop = backdrop,
                 vm = vm,
+                onOpen = { expanded = true },
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .navigationBarsPadding()
                     .padding(horizontal = 18.dp, vertical = 14.dp),
             )
+        }
+
+        AnimatedVisibility(
+            visible = expanded && st.current != null,
+            enter = slideInVertically(tween(450)) { it } + fadeIn(tween(450)),
+            exit = slideOutVertically(tween(350)) { it } + fadeOut(tween(350)),
+        ) {
+            st.current?.let { song ->
+                NowPlayingScreen(song, st, vm) { expanded = false }
+            }
         }
     }
 }
@@ -202,10 +224,15 @@ private fun NowPlayingBar(
     st: PlayerState,
     backdrop: LayerBackdrop,
     vm: PlayerViewModel,
+    onOpen: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val art = rememberArtwork(song, st.metadata?.artworkUrl)
-    GlassSurface(backdrop = backdrop, modifier = modifier.fillMaxWidth(), corner = 32.dp) {
+    GlassSurface(
+        backdrop = backdrop,
+        modifier = modifier.fillMaxWidth().clickable(onClick = onOpen),
+        corner = 32.dp,
+    ) {
         Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
             ArtworkImage(art, 64.dp, 20.dp)
             Spacer(Modifier.width(12.dp))
