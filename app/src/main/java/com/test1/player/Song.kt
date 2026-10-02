@@ -9,6 +9,8 @@ data class Song(
     val title: String,
     val artist: String,
     val album: String,
+    val albumId: Long,
+    val track: Int,
     val durationMs: Long,
     val uri: Uri,
 )
