@@ -6,7 +6,6 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -19,11 +18,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
@@ -51,7 +50,6 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.kyant.backdrop.backdrops.LayerBackdrop
 import com.kyant.backdrop.backdrops.layerBackdrop
@@ -63,6 +61,7 @@ fun NowPlayingScreen(song: Song, st: PlayerState, vm: PlayerViewModel, onClose: 
 
     val backdrop = rememberLayerBackdrop()
     val art = rememberArtwork(song, st.metadata?.artworkUrl)
+    val accent = remember(art) { art?.accentColor() }
     val pos = remember { mutableLongStateOf(0L) }
     var showLyrics by remember { mutableStateOf(false) }
     val lines = remember(st.metadata?.synced) { parseLrc(st.metadata?.synced) }
@@ -81,7 +80,7 @@ fun NowPlayingScreen(song: Song, st: PlayerState, vm: PlayerViewModel, onClose: 
             .pointerInput(Unit) { detectTapGestures { } } // don't let taps fall through to the list
     ) {
         Box(Modifier.layerBackdrop(backdrop).fillMaxSize()) {
-            AmbientBackground(art)
+            LiquidBackground(accent, art)
         }
 
         Column(
@@ -96,8 +95,20 @@ fun NowPlayingScreen(song: Song, st: PlayerState, vm: PlayerViewModel, onClose: 
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                GlassIconButton(backdrop, android.R.drawable.ic_menu_close_clear_cancel, 44.dp, onClose)
-                GlassPill(backdrop, if (showLyrics) "Player" else "Lyrics") { showLyrics = !showLyrics }
+                GlassButton(backdrop, 44.dp, onClose) {
+                    Icon(
+                        Icons.Filled.KeyboardArrowDown,
+                        contentDescription = "Close",
+                        modifier = Modifier.align(Alignment.Center),
+                        tint = Color.White,
+                    )
+                }
+                GlassPill(
+                    backdrop = backdrop,
+                    label = if (showLyrics) "Player" else "Lyrics",
+                    onClick = { showLyrics = !showLyrics },
+                    height = 44.dp,
+                )
             }
 
             if (showLyrics) {
@@ -250,44 +261,29 @@ private fun Controls(backdrop: LayerBackdrop, playing: Boolean, vm: PlayerViewMo
         horizontalArrangement = Arrangement.SpaceEvenly,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        GlassIconButton(backdrop, android.R.drawable.ic_media_previous, 60.dp, vm::previous)
-        GlassIconButton(
-            backdrop,
-            if (playing) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play,
-            84.dp,
-            vm::toggle,
-        )
-        GlassIconButton(backdrop, android.R.drawable.ic_media_next, 60.dp, vm::next)
-    }
-}
-
-@Composable
-private fun GlassIconButton(backdrop: LayerBackdrop, icon: Int, size: Dp, onClick: () -> Unit) {
-    GlassSurface(
-        backdrop = backdrop,
-        modifier = Modifier.size(size).clip(CircleShape).clickable(onClick = onClick),
-        corner = size / 2,
-    ) {
-        Icon(
-            painter = painterResource(icon),
-            contentDescription = null,
-            modifier = Modifier.align(Alignment.Center),
-            tint = Color.White,
-        )
-    }
-}
-
-@Composable
-private fun GlassPill(backdrop: LayerBackdrop, label: String, onClick: () -> Unit) {
-    GlassSurface(
-        backdrop = backdrop,
-        modifier = Modifier.height(44.dp).clip(RoundedCornerShape(22.dp)).clickable(onClick = onClick),
-        corner = 22.dp,
-    ) {
-        Text(
-            label,
-            Modifier.align(Alignment.Center).padding(horizontal = 20.dp),
-            fontWeight = FontWeight.SemiBold,
-        )
+        GlassButton(backdrop, 60.dp, vm::previous) {
+            Icon(
+                painterResource(android.R.drawable.ic_media_previous),
+                contentDescription = "Previous",
+                modifier = Modifier.align(Alignment.Center),
+                tint = Color.White,
+            )
+        }
+        GlassButton(backdrop, 84.dp, vm::toggle) {
+            Icon(
+                painterResource(if (playing) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play),
+                contentDescription = if (playing) "Pause" else "Play",
+                modifier = Modifier.align(Alignment.Center),
+                tint = Color.White,
+            )
+        }
+        GlassButton(backdrop, 60.dp, vm::next) {
+            Icon(
+                painterResource(android.R.drawable.ic_media_next),
+                contentDescription = "Next",
+                modifier = Modifier.align(Alignment.Center),
+                tint = Color.White,
+            )
+        }
     }
 }
