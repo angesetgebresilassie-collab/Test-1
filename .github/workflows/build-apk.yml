@@ -32,15 +32,17 @@ jobs:
       - name: Build debug APK
         run: gradle --no-daemon --stacktrace :app:assembleDebug
 
+      # The app uses ABI splits (arm64-v8a only), so the APK is named
+      # app-arm64-v8a-debug.apk rather than app-debug.apk.
       - name: Verify APK
         run: |
-          test -f app/build/outputs/apk/debug/app-debug.apk
-          ls -lh app/build/outputs/apk/debug/app-debug.apk
+          ls -lh app/build/outputs/apk/debug/
+          test -n "$(ls app/build/outputs/apk/debug/*.apk 2>/dev/null)"
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
           name: test-1-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           compression-level: 6
