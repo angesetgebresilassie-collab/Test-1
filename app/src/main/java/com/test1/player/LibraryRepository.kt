@@ -1,14 +1,56 @@
 package com.test1.player
+
 import android.content.ContentResolver
 import android.content.ContentUris
 import android.provider.MediaStore
-class LibraryRepository(private val resolver:ContentResolver){
- fun songs():List<Song>{
-  val out=mutableListOf<Song>();val uri=MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
-  val p=arrayOf(MediaStore.Audio.Media._ID,MediaStore.Audio.Media.TITLE,MediaStore.Audio.Media.ARTIST,MediaStore.Audio.Media.ALBUM,MediaStore.Audio.Media.DURATION)
-  resolver.query(uri,p,MediaStore.Audio.Media.IS_MUSIC+" != 0",null,MediaStore.Audio.Media.TITLE+" COLLATE NOCASE ASC")?.use{c->
-   val id=c.getColumnIndexOrThrow(MediaStore.Audio.Media._ID);val t=c.getColumnIndexOrThrow(MediaStore.Audio.Media.TITLE);val a=c.getColumnIndexOrThrow(MediaStore.Audio.Media.ARTIST);val al=c.getColumnIndexOrThrow(MediaStore.Audio.Media.ALBUM);val d=c.getColumnIndexOrThrow(MediaStore.Audio.Media.DURATION)
-   while(c.moveToNext()){val x=c.getLong(id);out+=Song(x,c.getString(t)?:"Unknown title",c.getString(a)?.takeUnless{it=="<unknown>"}?:"Unknown artist",c.getString(al)?:"Unknown album",c.getLong(d),ContentUris.withAppendedId(uri,x))}
-  };return out
- }
+import android.provider.MediaStore.Audio.Media
+
+class LibraryRepository(private val resolver: ContentResolver) {
+
+    /**
+     * Reads every playable audio file from MediaStore.
+     * No IS_MUSIC filter: downloads, messenger audio and many m4a files are not flagged as
+     * music even though they are songs. Ringtones/alarms/notifications and clips under
+     * 15 seconds are skipped instead.
+     */
+    fun songs(): List<Song> {
+        val out = mutableListOf<Song>()
+        val collection = Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
+        val projection = arrayOf(
+            Media._ID,
+            Media.TITLE,
+            Media.ARTIST,
+            Media.ALBUM,
+            Media.ALBUM_ID,
+            Media.TRACK,
+            Media.DURATION,
+        )
+        val selection = "${Media.IS_RINGTONE} = 0 AND ${Media.IS_NOTIFICATION} = 0 AND " +
+            "${Media.IS_ALARM} = 0 AND ${Media.DURATION} >= 15000"
+        runCatching {
+            resolver.query(collection, projection, selection, null, "${Media.TITLE} COLLATE NOCASE ASC")?.use { c ->
+                val id = c.getColumnIndexOrThrow(Media._ID)
+                val title = c.getColumnIndexOrThrow(Media.TITLE)
+                val artist = c.getColumnIndexOrThrow(Media.ARTIST)
+                val album = c.getColumnIndexOrThrow(Media.ALBUM)
+                val albumId = c.getColumnIndexOrThrow(Media.ALBUM_ID)
+                val track = c.getColumnIndexOrThrow(Media.TRACK)
+                val duration = c.getColumnIndexOrThrow(Media.DURATION)
+                while (c.moveToNext()) {
+                    val songId = c.getLong(id)
+                    out += Song(
+                        id = songId,
+                        title = c.getString(title)?.takeIf { it.isNotBlank() } ?: "Unknown title",
+                        artist = c.getString(artist)?.takeUnless { it == "<unknown>" || it.isBlank() } ?: "Unknown artist",
+                        album = c.getString(album)?.takeUnless { it.isBlank() } ?: "Unknown album",
+                        albumId = c.getLong(albumId),
+                        track = c.getInt(track),
+                        durationMs = c.getLong(duration),
+                        uri = ContentUris.withAppendedId(collection, songId),
+                    )
+                }
+            }
+        }
+        return out
+    }
 }
