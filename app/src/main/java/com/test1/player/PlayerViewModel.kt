@@ -181,15 +181,23 @@ class PlayerViewModel(private val app: Application) : AndroidViewModel(app) {
         store.save(list)
     }
 
-    fun createPlaylist(name: String, firstSongId: Long?) {
+    fun createPlaylist(name: String, songIds: List<Long>) {
         val n = name.trim().ifBlank { "New Playlist" }
-        savePlaylists(playlists.value + Playlist(UUID.randomUUID().toString(), n, listOfNotNull(firstSongId)))
+        savePlaylists(playlists.value + Playlist(UUID.randomUUID().toString(), n, songIds.distinct()))
     }
 
     fun addToPlaylist(playlistId: String, songId: Long) {
         savePlaylists(
             playlists.value.map {
                 if (it.id == playlistId && songId !in it.songIds) it.copy(songIds = it.songIds + songId) else it
+            }
+        )
+    }
+
+    fun addAllToPlaylist(playlistId: String, songIds: List<Long>) {
+        savePlaylists(
+            playlists.value.map {
+                if (it.id == playlistId) it.copy(songIds = (it.songIds + songIds).distinct()) else it
             }
         )
     }
