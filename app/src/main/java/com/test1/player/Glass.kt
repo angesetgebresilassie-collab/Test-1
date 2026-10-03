@@ -158,8 +158,8 @@ private fun hueShift(c: Color, degrees: Float): Color {
 
 /**
  * The thing the glass refracts: slowly drifting colour blobs (tinted by the current artwork's
- * accent colour) over a blurred copy of the artwork. Without something colourful behind it,
- * glass just looks like a grey box.
+ * accent colour) over a blurred copy of the artwork, under a dark scrim (iOS 27 style: calm
+ * and dark, with the colour showing through the glass).
  */
 @Composable
 fun LiquidBackground(accent: Color?, art: ImageBitmap?) {
@@ -193,7 +193,7 @@ fun LiquidBackground(accent: Color?, art: ImageBitmap?) {
                 val center = Offset(cx, cy)
                 drawCircle(
                     brush = Brush.radialGradient(
-                        colors = listOf(color.copy(alpha = 0.85f), Color.Transparent),
+                        colors = listOf(color.copy(alpha = 0.65f), Color.Transparent),
                         center = center,
                         radius = r,
                     ),
@@ -220,7 +220,7 @@ fun LiquidBackground(accent: Color?, art: ImageBitmap?) {
         Box(
             Modifier
                 .fillMaxSize()
-                .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.15f), Color.Black.copy(alpha = 0.45f))))
+                .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.30f), Color.Black.copy(alpha = 0.62f))))
         )
     }
 }
