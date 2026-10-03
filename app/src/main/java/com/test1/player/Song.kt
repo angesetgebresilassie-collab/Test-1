@@ -13,6 +13,8 @@ data class Song(
     val track: Int,
     val durationMs: Long,
     val uri: Uri,
+    /** Original file name; the source of truth for metadata lookups (embedded tags are unreliable). */
+    val fileName: String = "",
 )
 
 fun Song.toMediaItem(): MediaItem = MediaItem.Builder()
