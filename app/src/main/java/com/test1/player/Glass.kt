@@ -3,13 +3,17 @@ package com.test1.player
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -33,6 +37,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
@@ -47,6 +52,8 @@ import com.kyant.backdrop.effects.lens
 import com.kyant.backdrop.effects.vibrancy
 import kotlin.math.cos
 import kotlin.math.sin
+
+val LiquidBlue = Color(0xFF2E8BFF)
 
 /** Real Liquid Glass: samples the layer backdrop, blurs, saturates and refracts at the edges. */
 @Composable
@@ -76,20 +83,95 @@ fun GlassSurface(
     )
 }
 
+/** 0 → 1 with a springy overshoot while the button is held down (the "liquid" swell). */
+@Composable
+fun pressProgress(source: MutableInteractionSource): Float {
+    val pressed by source.collectIsPressedAsState()
+    val progress by animateFloatAsState(
+        targetValue = if (pressed) 1f else 0f,
+        animationSpec = spring(dampingRatio = 0.55f, stiffness = 380f),
+        label = "press",
+    )
+    return progress
+}
+
 @Composable
 fun GlassButton(
     backdrop: LayerBackdrop,
     size: Dp,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    tint: Color = Color.White.copy(alpha = 0.10f),
     content: @Composable BoxScope.() -> Unit,
 ) {
+    val source = remember { MutableInteractionSource() }
+    val p = pressProgress(source)
     GlassSurface(
         backdrop = backdrop,
-        modifier = modifier.size(size).clip(CircleShape).clickable(onClick = onClick),
+        modifier = modifier
+            .size(size)
+            .graphicsLayer {
+                val s = 1f + 0.12f * p
+                scaleX = s
+                scaleY = s
+            }
+            .clip(CircleShape)
+            .clickable(interactionSource = source, indication = null, onClick = onClick),
         corner = size / 2,
+        tint = tint.copy(alpha = (tint.alpha + 0.14f * p).coerceAtMost(1f)),
         content = content,
     )
+}
+
+enum class LiquidStyle { Transparent, Surface, Tinted }
+
+/**
+ * The three liquid button styles: Transparent (pure refraction), Surface (frosted) and
+ * Tinted (solid colour with glass edges). All of them swell when pressed.
+ */
+@Composable
+fun LiquidButton(
+    backdrop: LayerBackdrop,
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    icon: ImageVector? = null,
+    style: LiquidStyle = LiquidStyle.Surface,
+    color: Color = LiquidBlue,
+    height: Dp = 52.dp,
+) {
+    val source = remember { MutableInteractionSource() }
+    val p = pressProgress(source)
+    val tint = when (style) {
+        LiquidStyle.Transparent -> Color.White.copy(alpha = 0.06f + 0.14f * p)
+        LiquidStyle.Surface -> Color.White.copy(alpha = 0.20f + 0.14f * p)
+        LiquidStyle.Tinted -> color.copy(alpha = (0.88f + 0.12f * p).coerceAtMost(1f))
+    }
+    GlassSurface(
+        backdrop = backdrop,
+        modifier = modifier
+            .height(height)
+            .graphicsLayer {
+                val s = 1f + 0.10f * p
+                scaleX = s
+                scaleY = s
+            }
+            .clip(RoundedCornerShape(height / 2))
+            .clickable(interactionSource = source, indication = null, onClick = onClick),
+        corner = height / 2,
+        tint = tint,
+    ) {
+        Row(
+            Modifier.align(Alignment.Center).padding(horizontal = 20.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (icon != null) {
+                Icon(icon, contentDescription = null, modifier = Modifier.size(20.dp), tint = Color.White)
+            }
+            Text(label, fontWeight = FontWeight.SemiBold, maxLines = 1, color = Color.White)
+        }
+    }
 }
 
 @Composable
@@ -100,23 +182,9 @@ fun GlassPill(
     modifier: Modifier = Modifier,
     icon: ImageVector? = null,
     height: Dp = 48.dp,
+    style: LiquidStyle = LiquidStyle.Surface,
 ) {
-    GlassSurface(
-        backdrop = backdrop,
-        modifier = modifier.height(height).clip(RoundedCornerShape(height / 2)).clickable(onClick = onClick),
-        corner = height / 2,
-    ) {
-        Row(
-            Modifier.align(Alignment.Center).padding(horizontal = 20.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            if (icon != null) {
-                Icon(icon, contentDescription = null, modifier = Modifier.size(20.dp), tint = Color.White)
-            }
-            Text(label, fontWeight = FontWeight.SemiBold, maxLines = 1)
-        }
-    }
+    LiquidButton(backdrop, label, onClick, modifier, icon, style, LiquidBlue, height)
 }
 
 @Composable
@@ -157,9 +225,8 @@ private fun hueShift(c: Color, degrees: Float): Color {
 }
 
 /**
- * The thing the glass refracts: slowly drifting colour blobs (tinted by the current artwork's
- * accent colour) over a blurred copy of the artwork, under a dark scrim (iOS 27 style: calm
- * and dark, with the colour showing through the glass).
+ * Dark backdrop for the glass to refract: near-black with faint drifting colour glows
+ * (tinted by the current artwork) and a dim, blurred copy of the artwork.
  */
 @Composable
 fun LiquidBackground(accent: Color?, art: ImageBitmap?) {
@@ -167,7 +234,7 @@ fun LiquidBackground(accent: Color?, art: ImageBitmap?) {
         if (accent != null) {
             listOf(accent, hueShift(accent, 35f), hueShift(accent, -45f), hueShift(accent, 150f))
         } else {
-            listOf(Color(0xFF7C4DFF), Color(0xFFFF4081), Color(0xFF00B0FF), Color(0xFF1DE9B6))
+            listOf(Color(0xFF3D5AFE), Color(0xFF7C4DFF), Color(0xFF00B0FF), Color(0xFF1DE9B6))
         }
     }
     val transition = rememberInfiniteTransition(label = "liquid")
@@ -184,7 +251,7 @@ fun LiquidBackground(accent: Color?, art: ImageBitmap?) {
         label = "b",
     )
 
-    Box(Modifier.fillMaxSize().background(Color(0xFF05060A))) {
+    Box(Modifier.fillMaxSize().background(Color(0xFF040406))) {
         Canvas(Modifier.fillMaxSize()) {
             val w = size.width
             val h = size.height
@@ -193,7 +260,7 @@ fun LiquidBackground(accent: Color?, art: ImageBitmap?) {
                 val center = Offset(cx, cy)
                 drawCircle(
                     brush = Brush.radialGradient(
-                        colors = listOf(color.copy(alpha = 0.65f), Color.Transparent),
+                        colors = listOf(color.copy(alpha = 0.30f), Color.Transparent),
                         center = center,
                         radius = r,
                     ),
@@ -213,14 +280,14 @@ fun LiquidBackground(accent: Color?, art: ImageBitmap?) {
                     contentDescription = null,
                     modifier = Modifier.fillMaxSize().blur(50.dp),
                     contentScale = ContentScale.Crop,
-                    alpha = 0.35f,
+                    alpha = 0.45f,
                 )
             }
         }
         Box(
             Modifier
                 .fillMaxSize()
-                .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.30f), Color.Black.copy(alpha = 0.62f))))
+                .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.25f), Color.Black.copy(alpha = 0.72f))))
         )
     }
 }
