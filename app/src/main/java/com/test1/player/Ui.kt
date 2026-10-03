@@ -3,6 +3,8 @@ package com.test1.player
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -11,6 +13,7 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -21,7 +24,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
@@ -54,6 +56,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -62,9 +65,10 @@ import androidx.compose.ui.unit.*
 import com.kyant.backdrop.backdrops.LayerBackdrop
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import kotlin.math.roundToInt
 
-private val Accent = Color(0xFFFA2D48)
-private val BaseDark = Color(0xFF0B0C10)
+private val Accent = LiquidBlue
+private val BaseDark = Color(0xFF040406)
 
 private enum class HomeTab(val label: String, val icon: ImageVector) {
     Songs("Songs", Icons.Filled.MusicNote),
@@ -170,7 +174,7 @@ fun Home(vm: PlayerViewModel, granted: Boolean, onGrant: () -> Unit, onOpenSetti
     BackHandler(enabled = detail != null) { detail = null }
     BackHandler(enabled = searching) { toggleSearch() }
 
-    Box(Modifier.fillMaxSize()) {
+    Box(Modifier.fillMaxSize().background(BaseDark)) {
         // Everything the glass refracts lives in this layer.
         Box(Modifier.layerBackdrop(backdrop).fillMaxSize()) {
             LiquidBackground(accent, art)
@@ -198,7 +202,7 @@ fun Home(vm: PlayerViewModel, granted: Boolean, onGrant: () -> Unit, onOpenSetti
                         "Allow access to your music",
                         "The player needs permission to read audio files on this device. Nothing leaves your phone.",
                     ) {
-                        GlassPill(backdrop, "Allow access", onGrant, Modifier.fillMaxWidth())
+                        GlassPill(backdrop, "Allow access", onGrant, Modifier.fillMaxWidth(), style = LiquidStyle.Tinted)
                         GlassPill(backdrop, "Open app settings", onOpenSettings, Modifier.fillMaxWidth())
                     }
                     !loaded || (scanning && songs.isEmpty()) -> MessageCard(
@@ -213,7 +217,14 @@ fun Home(vm: PlayerViewModel, granted: Boolean, onGrant: () -> Unit, onOpenSetti
                         "No music found",
                         "Nothing playable showed up in the media library. If you just copied songs onto the phone, tap rescan so Android indexes them.",
                     ) {
-                        GlassPill(backdrop, "Rescan storage", { vm.rescan() }, Modifier.fillMaxWidth(), Icons.Filled.Refresh)
+                        GlassPill(
+                            backdrop,
+                            "Rescan storage",
+                            { vm.rescan() },
+                            Modifier.fillMaxWidth(),
+                            Icons.Filled.Refresh,
+                            style = LiquidStyle.Tinted,
+                        )
                     }
                     else -> Crossfade(targetState = tab, label = "tab") { t ->
                         when (t) {
@@ -393,6 +404,10 @@ private fun SearchField(backdrop: LayerBackdrop, query: String, onQuery: (String
     }
 }
 
+/**
+ * Liquid glass tab bar: a frosted pill with a glass "lens" under the selected tab that slides
+ * between tabs with a spring, and swells while you drag it. The selected tab turns blue.
+ */
 @Composable
 private fun BottomBar(
     selected: HomeTab,
@@ -401,22 +416,89 @@ private fun BottomBar(
     onTab: (HomeTab) -> Unit,
     onSearch: () -> Unit,
 ) {
+    val tabs = HomeTab.values()
     Row(
         Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        GlassSurface(backdrop, Modifier.weight(1f).height(64.dp), corner = 32.dp) {
-            Row(Modifier.fillMaxSize().padding(5.dp)) {
-                HomeTab.values().forEach { t ->
-                    val isSelected = t == selected
-                    val color = if (isSelected) Color.White else Color.White.copy(alpha = 0.7f)
+        BoxWithConstraints(Modifier.weight(1f).height(64.dp)) {
+            val inner = 5.dp
+            val tabW = (maxWidth - inner * 2) / tabs.size
+            val tabWpx = with(LocalDensity.current) { tabW.toPx() }
+            val maxPx = tabWpx * (tabs.size - 1)
+
+            var dragging by remember { mutableStateOf(false) }
+            var dragPx by remember { mutableFloatStateOf(0f) }
+            val animPx by animateFloatAsState(
+                targetValue = selected.ordinal * tabWpx,
+                animationSpec = spring(dampingRatio = 0.7f, stiffness = 420f),
+                label = "tabX",
+            )
+            val swell by animateFloatAsState(
+                targetValue = if (dragging) 1f else 0f,
+                animationSpec = spring(dampingRatio = 0.55f, stiffness = 380f),
+                label = "swell",
+            )
+            val indicatorPx = if (dragging) dragPx else animPx
+            val shown = (indicatorPx / tabWpx + 0.5f).toInt().coerceIn(0, tabs.lastIndex)
+
+            // Frosted bar.
+            GlassSurface(
+                backdrop = backdrop,
+                modifier = Modifier.fillMaxSize(),
+                corner = 32.dp,
+                tint = Color(0xFF8A8F94).copy(alpha = 0.30f),
+            ) {}
+
+            // Sliding glass lens under the selected tab.
+            GlassSurface(
+                backdrop = backdrop,
+                modifier = Modifier
+                    .padding(inner)
+                    .offset { IntOffset(indicatorPx.roundToInt(), 0) }
+                    .width(tabW)
+                    .fillMaxHeight()
+                    .graphicsLayer {
+                        val s = 1f + 0.10f * swell
+                        scaleX = s
+                        scaleY = s
+                    },
+                corner = 27.dp,
+                tint = Color.White.copy(alpha = 0.16f + 0.10f * swell),
+            ) {}
+
+            // Icons + labels (also handle taps and drag-to-select).
+            Row(
+                Modifier
+                    .fillMaxSize()
+                    .padding(inner)
+                    .pointerInput(selected, tabWpx) {
+                        detectHorizontalDragGestures(
+                            onDragStart = {
+                                dragging = true
+                                dragPx = selected.ordinal * tabWpx
+                            },
+                            onDragEnd = {
+                                val idx = (dragPx / tabWpx + 0.5f).toInt().coerceIn(0, tabs.lastIndex)
+                                dragging = false
+                                onTab(tabs[idx])
+                            },
+                            onDragCancel = { dragging = false },
+                            onHorizontalDrag = { change, delta ->
+                                change.consume()
+                                dragPx = (dragPx + delta).coerceIn(0f, maxPx)
+                            },
+                        )
+                    },
+            ) {
+                tabs.forEachIndexed { i, t ->
+                    val color = if (i == shown) Accent else Color.White
                     Column(
                         Modifier
                             .weight(1f)
                             .fillMaxHeight()
                             .clip(RoundedCornerShape(27.dp))
-                            .background(if (isSelected) Color.White.copy(alpha = 0.18f) else Color.Transparent)
                             .clickable { onTab(t) },
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center,
@@ -427,11 +509,11 @@ private fun BottomBar(
                 }
             }
         }
-        GlassSurface(
+        GlassButton(
             backdrop = backdrop,
-            modifier = Modifier.size(64.dp).clip(CircleShape).clickable(onClick = onSearch),
-            corner = 32.dp,
-            tint = if (searching) Accent.copy(alpha = 0.35f) else Color.White.copy(alpha = 0.12f),
+            size = 64.dp,
+            onClick = onSearch,
+            tint = if (searching) Accent.copy(alpha = 0.35f) else Color(0xFF8A8F94).copy(alpha = 0.30f),
         ) {
             Icon(
                 Icons.Filled.Search,
@@ -533,23 +615,8 @@ private fun EmptyHint(text: String) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Shared pieces: white pill, hairline, flat track row
+// Shared pieces: hairline, flat track row
 // ---------------------------------------------------------------------------------------------
-
-@Composable
-private fun WhitePill(label: String, icon: ImageVector?, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    Box(
-        modifier.clip(RoundedCornerShape(50)).background(Color.White).clickable(onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            if (icon != null) {
-                Icon(icon, contentDescription = null, modifier = Modifier.size(22.dp), tint = Color.Black)
-            }
-            Text(label, color = Color.Black, fontWeight = FontWeight.SemiBold, fontSize = 17.sp)
-        }
-    }
-}
 
 @Composable
 private fun Hairline(start: Dp) {
@@ -562,7 +629,7 @@ private fun Hairline(start: Dp) {
     )
 }
 
-/** Flat row with a hairline divider (no glass box per row, like the iOS 27 lists). */
+/** Flat row with a hairline divider (no glass box per row). */
 @Composable
 private fun TrackRow(
     song: Song,
@@ -652,8 +719,14 @@ private fun SongList(
                     Modifier.fillMaxWidth().padding(end = 8.dp, bottom = 8.dp),
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    WhitePill("Play", Icons.Filled.PlayArrow, onPlayAll, Modifier.weight(1f).height(48.dp))
-                    GlassPill(backdrop, "Shuffle", onShuffle, Modifier.weight(1f), Icons.Filled.Shuffle)
+                    LiquidButton(
+                        backdrop, "Play", onPlayAll, Modifier.weight(1f),
+                        icon = Icons.Filled.PlayArrow, style = LiquidStyle.Tinted, height = 48.dp,
+                    )
+                    LiquidButton(
+                        backdrop, "Shuffle", onShuffle, Modifier.weight(1f),
+                        icon = Icons.Filled.Shuffle, style = LiquidStyle.Surface, height = 48.dp,
+                    )
                 }
             }
         }
@@ -821,7 +894,7 @@ private fun PlaylistList(
 }
 
 // ---------------------------------------------------------------------------------------------
-// Detail page (album / artist / playlist): full-bleed artwork hero like Apple Music on iOS 27
+// Detail page (album / artist / playlist): full-bleed artwork hero
 // ---------------------------------------------------------------------------------------------
 
 @Composable
@@ -867,7 +940,7 @@ private fun DetailScreen(
                 } else {
                     Box(
                         Modifier.fillMaxSize().background(
-                            Brush.verticalGradient(listOf(Color(0xFF2A2D3E), BaseDark))
+                            Brush.verticalGradient(listOf(Color(0xFF1B2030), BaseDark))
                         )
                     )
                 }
@@ -927,7 +1000,10 @@ private fun DetailScreen(
                                 tint = Color.White,
                             )
                         }
-                        WhitePill("Play", Icons.Filled.PlayArrow, onPlayAll, Modifier.width(150.dp).height(56.dp))
+                        LiquidButton(
+                            backdrop, "Play", onPlayAll, Modifier.width(150.dp),
+                            icon = Icons.Filled.PlayArrow, style = LiquidStyle.Tinted, height = 56.dp,
+                        )
                         GlassButton(backdrop, 56.dp, onDelete ?: onAddAll) {
                             Icon(
                                 if (onDelete != null) Icons.Filled.Delete else Icons.Filled.Add,
@@ -986,7 +1062,7 @@ private fun DialogHost(
     Box(
         Modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.5f))
+            .background(Color.Black.copy(alpha = 0.55f))
             .pointerInput(Unit) { detectTapGestures { onDismiss() } }
     ) {
         GlassSurface(
@@ -999,6 +1075,7 @@ private fun DialogHost(
                 .padding(16.dp)
                 .pointerInput(Unit) { detectTapGestures { } },
             corner = 32.dp,
+            tint = Color(0xFF8A8F94).copy(alpha = 0.30f),
         ) {
             Column(Modifier.padding(20.dp)) {
                 when (dialog) {
@@ -1105,5 +1182,6 @@ private fun NewPlaylistContent(songs: List<Song>, backdrop: LayerBackdrop, vm: P
             onDismiss()
         },
         modifier = Modifier.fillMaxWidth(),
+        style = LiquidStyle.Tinted,
     )
 }
