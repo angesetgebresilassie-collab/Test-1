@@ -8,6 +8,11 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 
+/**
+ * Metadata is looked up from the song's FILE NAME (embedded tags can be misleading).
+ * A search result is only accepted when its words overlap enough with the file name,
+ * so a wrong song never replaces the file-name title/artist.
+ */
 class MetadataRepository(private val cache: MetadataCache) {
     private val retried = mutableSetOf<Long>()
 
@@ -25,21 +30,65 @@ class MetadataRepository(private val cache: MetadataCache) {
                 .also { cache.put(song.id, it) }
         }
 
-        val i = runCatching { itunes(song) }.getOrNull()
-        val title = i?.title?.takeIf { it.isNotBlank() } ?: song.title
-        val artist = i?.artist?.takeIf { it.isNotBlank() } ?: song.artist
+        val parsed = FileNames.parse(song.fileName.ifBlank { song.title })
+        val lookupOk: Boolean
+        val i = runCatching { itunes(parsed) }.also { lookupOk = it.isSuccess }.getOrNull()
+        val title = i?.title?.takeIf { it.isNotBlank() } ?: parsed.title
+        val artist = i?.artist?.takeIf { it.isNotBlank() } ?: parsed.artist ?: song.artist
         val album = i?.album?.takeIf { it.isNotBlank() } ?: song.album
         val found = runCatching { lyrics(artist, title, durationSec) }.getOrNull()
         val result = CachedMetadata(title, artist, album, i?.artworkUrl, found?.first, found?.second)
-        // Only cache when the lookup actually worked, so offline plays don't lock in bare metadata.
-        if (i != null) cache.put(song.id, result)
+        // Cache only when the lookup itself worked (match or confirmed no-match), so offline plays don't lock in bare data.
+        if (lookupOk) cache.put(song.id, result)
         result
     }
 
-    private fun itunes(s: Song): CachedMetadata {
-        val q = URLEncoder.encode(s.artist + " " + s.title, "UTF-8")
-        val o = JSONObject(get("https://itunes.apple.com/search?term=$q&entity=song&limit=1"))
-            .getJSONArray("results").getJSONObject(0)
+    // ---- file-name search with word-overlap matching ----
+
+    private val noise = setOf("feat", "ft", "featuring", "with", "prod", "official", "audio", "video", "lyrics")
+    private val brackets = Regex("""\s*[(\[{][^)\]}]*[)\]}]""")
+
+    private fun tokens(s: String): Set<String> =
+        s.lowercase()
+            .replace(Regex("""[^\p{L}\p{N}]+"""), " ")
+            .split(' ')
+            .filter { it.isNotEmpty() && it !in noise }
+            .toSet()
+
+    /** Best iTunes match for the file name, or null when nothing overlaps enough. */
+    private fun itunes(p: ParsedName): CachedMetadata? {
+        val query = listOfNotNull(p.artist, p.title).joinToString(" ")
+        val q = URLEncoder.encode(query, "UTF-8")
+        val results = JSONObject(get("https://itunes.apple.com/search?term=$q&entity=song&limit=10"))
+            .getJSONArray("results")
+
+        val wantTitle = tokens(p.title)
+        val wantArtist = p.artist?.let { tokens(it) }.orEmpty()
+        if (wantTitle.isEmpty()) return null
+
+        var best: JSONObject? = null
+        var bestScore = 0.0
+        for (k in 0 until results.length()) {
+            val o = results.getJSONObject(k)
+            val trackName = o.optString("trackName")
+            val haveTitle = tokens(brackets.replace(trackName, ""))
+            if (haveTitle.isEmpty()) continue
+            val union = (wantTitle + haveTitle).size.toDouble()
+            val titleScore = (wantTitle intersect haveTitle).size / union
+            if (titleScore < 0.7) continue
+
+            val haveArtist = tokens(o.optString("artistName") + " " + trackName)
+            val artistHit = wantArtist.isEmpty() || (wantArtist intersect haveArtist).isNotEmpty()
+            // With an artist in the file name it must overlap; without one demand a near-exact title.
+            if (!artistHit || (wantArtist.isEmpty() && titleScore < 0.85)) continue
+
+            val score = titleScore + if (wantArtist.isNotEmpty()) 0.2 else 0.0
+            if (score > bestScore) {
+                bestScore = score
+                best = o
+            }
+        }
+        val o = best ?: return null
         return CachedMetadata(
             o.optString("trackName"),
             o.optString("artistName"),
