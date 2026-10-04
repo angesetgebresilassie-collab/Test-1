@@ -111,13 +111,29 @@ private fun metaOf(list: List<Song>): String {
     return "${list.size} songs · $minutes min"
 }
 
+/** The song to take cover art from: the first one that already has looked-up artwork. */
+private fun List<Song>.coverSong(): Song? = firstOrNull { it.artworkUrl != null } ?: firstOrNull()
+
 @Composable
 fun Home(vm: PlayerViewModel, granted: Boolean, onGrant: () -> Unit, onOpenSettings: () -> Unit) {
-    val songs by vm.songs.collectAsState()
+    val rawSongs by vm.songs.collectAsState()
+    val found by vm.found.collectAsState()
     val st by vm.state.collectAsState()
     val playlists by vm.playlists.collectAsState()
     val loaded by vm.loaded.collectAsState()
     val scanning by vm.scanning.collectAsState()
+
+    // Songs as shown in the lists: title / artist / artwork from the file-name lookup once it arrives.
+    val songs = remember(rawSongs, found) {
+        rawSongs.map { s ->
+            val m = found[s.id]
+            if (m == null) s else s.copy(
+                title = m.title.ifBlank { s.title },
+                artist = m.artist.ifBlank { s.artist },
+                artworkUrl = m.artworkUrl,
+            )
+        }
+    }
 
     val backdrop = rememberLayerBackdrop()
     val art = rememberArtwork(st.current, st.metadata?.artworkUrl)
@@ -614,6 +630,7 @@ private fun MiniPlayer(
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
+                    color = Color.White,
                 )
                 Text(
                     st.metadata?.artist ?: song.artist,
@@ -718,7 +735,7 @@ private fun TrackRow(
                     color = if (isCurrent) accent else Color.White.copy(alpha = 0.55f),
                 )
             } else {
-                val art = rememberArtwork(song, null)
+                val art = rememberArtwork(song, song.artworkUrl)
                 ArtworkBox(art, Modifier.size(48.dp), 8.dp)
                 Spacer(Modifier.width(12.dp))
             }
@@ -832,7 +849,8 @@ private fun AlbumGrid(albums: List<AlbumItem>, bottomPad: Dp, onOpen: (AlbumItem
         verticalArrangement = Arrangement.spacedBy(18.dp),
     ) {
         items(albums, key = { it.id }) { album ->
-            val art = rememberArtwork(album.songs.first(), null)
+            val cover = album.songs.coverSong()
+            val art = rememberArtwork(cover, cover?.artworkUrl)
             Column(Modifier.fillMaxWidth().clickable { onOpen(album) }) {
                 ArtworkBox(art, Modifier.fillMaxWidth().aspectRatio(1f), 14.dp)
                 Spacer(Modifier.height(8.dp))
@@ -862,7 +880,8 @@ private fun ArtistList(artists: List<ArtistItem>, bottomPad: Dp, onOpen: (Artist
     ) {
         if (artists.isEmpty()) item(key = "empty") { EmptyHint("No matching artists") }
         items(artists, key = { it.name }) { artist ->
-            val art = rememberArtwork(artist.songs.first(), null)
+            val cover = artist.songs.coverSong()
+            val art = rememberArtwork(cover, cover?.artworkUrl)
             Column(Modifier.fillMaxWidth()) {
                 Row(
                     Modifier.fillMaxWidth().clickable { onOpen(artist) }.padding(vertical = 8.dp),
@@ -927,8 +946,8 @@ private fun PlaylistList(
             }
         }
         items(playlists, key = { it.id }) { playlist ->
-            val first = playlist.songIds.firstNotNullOfOrNull { songById[it] }
-            val art = rememberArtwork(first, null)
+            val cover = playlist.songIds.mapNotNull { songById[it] }.coverSong()
+            val art = rememberArtwork(cover, cover?.artworkUrl)
             Column(Modifier.fillMaxWidth()) {
                 Row(
                     Modifier.fillMaxWidth().clickable { onOpen(playlist) }.padding(vertical = 8.dp),
@@ -974,7 +993,8 @@ private fun DetailScreen(
     onMenu: (Song) -> Unit,
     onDelete: (() -> Unit)?,
 ) {
-    val art = rememberArtwork(data.songs.firstOrNull(), null)
+    val cover = data.songs.coverSong()
+    val art = rememberArtwork(cover, cover?.artworkUrl)
     val backdrop = rememberLayerBackdrop() // glass on this page refracts the hero artwork
     val listState = rememberLazyListState()
 
@@ -1040,6 +1060,7 @@ private fun DetailScreen(
                         textAlign = TextAlign.Center,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
+                        color = Color.White,
                     )
                     Text(
                         data.subtitle,
