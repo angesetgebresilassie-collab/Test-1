@@ -23,20 +23,19 @@ import java.net.URL
 
 /**
  * Artwork lookup order:
- * 1. embedded / MediaStore thumbnail from the file itself (offline)
- * 2. previously downloaded artwork saved on disk
- * 3. remote artwork URL (iTunes), downloaded once and saved to disk
+ * 1. artwork found by the file-name lookup (downloaded once, saved on disk per URL)
+ * 2. embedded / MediaStore thumbnail from the file itself (offline fallback)
  */
 object ArtworkLoader {
     private val memory = LruCache<String, ImageBitmap>(64)
 
     suspend fun load(context: Context, song: Song, remoteUrl: String?): ImageBitmap? =
         withContext(Dispatchers.IO) {
-            val key = song.id.toString()
+            val key = song.id.toString() + (remoteUrl?.takeIf { it.isNotBlank() }?.let { "-" + it.hashCode() } ?: "")
             memory.get(key)?.let { return@withContext it }
-            val bitmap = fromLocal(context, song)
-                ?: fromDisk(context, key)
+            val bitmap = fromDisk(context, key)
                 ?: fromRemote(context, key, remoteUrl)
+                ?: fromLocal(context, song)
             bitmap?.asImageBitmap()?.also { memory.put(key, it) }
         }
 
