@@ -1,253 +1,51 @@
 package com.test1.player
 
-import androidx.activity.compose.BackHandler
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
-import androidx.compose.foundation.Image
+import android.graphics.Bitmap
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
+import androidx.compose.material.icons.rounded.Pause
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.SkipNext
+import androidx.compose.material.icons.rounded.SkipPrevious
 import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.LongState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.kyant.backdrop.backdrops.LayerBackdrop
+import androidx.compose.ui.unit.sp
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
-
-@Composable
-fun NowPlayingScreen(song: Song, st: PlayerState, vm: PlayerViewModel, onClose: () -> Unit) {
-    BackHandler(onBack = onClose)
-
-    val backdrop = rememberLayerBackdrop()
-    val art = rememberArtwork(song, st.metadata?.artworkUrl)
-    val accent = remember(art) { art?.accentColor() }
-    val pos = remember { mutableLongStateOf(0L) }
-    var showLyrics by remember { mutableStateOf(false) }
-    val lines = remember(st.metadata?.synced) { parseLrc(st.metadata?.synced) }
-
-    // Frame-synced playback position; only the views that read it recompose.
-    LaunchedEffect(Unit) {
-        while (true) {
-            withFrameNanos { }
-            pos.longValue = vm.positionMs()
-        }
-    }
-
-    Box(
-        Modifier
-            .fillMaxSize()
-            .pointerInput(Unit) { detectTapGestures { } } // don't let taps fall through to the list
-    ) {
-        Box(Modifier.layerBackdrop(backdrop).fillMaxSize()) {
-            LiquidBackground(accent, art)
-        }
-
-        Column(
-            Modifier
-                .fillMaxSize()
-                .statusBarsPadding()
-                .navigationBarsPadding()
-                .padding(horizontal = 24.dp, vertical = 12.dp)
-        ) {
-            Row(
-                Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                GlassButton(backdrop, 44.dp, onClose) {
-                    Icon(
-                        Icons.Filled.KeyboardArrowDown,
-                        contentDescription = "Close",
-                        modifier = Modifier.align(Alignment.Center),
-                        tint = Color.White,
-                    )
-                }
-                GlassPill(
-                    backdrop = backdrop,
-                    label = if (showLyrics) "Player" else "Lyrics",
-                    onClick = { showLyrics = !showLyrics },
-                    height = 44.dp,
-                )
-            }
-
-            if (showLyrics) {
-                LyricsPage(Modifier.weight(1f), st, song, art, lines, pos, vm)
-            } else {
-                PlayerPage(Modifier.weight(1f), st, song, art)
-            }
-
-            SeekBar(pos, song.durationMs, vm::seekTo)
-            Spacer(Modifier.height(12.dp))
-            Controls(backdrop, st.playing, vm)
-            Spacer(Modifier.height(8.dp))
-        }
-    }
-}
-
-@Composable
-private fun PlayerPage(modifier: Modifier, st: PlayerState, song: Song, art: ImageBitmap?) {
-    // Artwork "breathes": full size while playing, shrinks when paused.
-    val scale by animateFloatAsState(
-        targetValue = if (st.playing) 1f else 0.88f,
-        animationSpec = spring(dampingRatio = 0.6f, stiffness = Spring.StiffnessLow),
-        label = "artScale",
-    )
-    Column(
-        modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .aspectRatio(1f)
-                .graphicsLayer {
-                    scaleX = scale
-                    scaleY = scale
-                }
-                .clip(RoundedCornerShape(32.dp))
-                .background(Color.White.copy(alpha = 0.08f))
-        ) {
-            if (art != null) {
-                Image(
-                    bitmap = art,
-                    contentDescription = null,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop,
-                )
-            }
-        }
-        Spacer(Modifier.height(28.dp))
-        Text(
-            st.metadata?.title ?: song.title,
-            style = MaterialTheme.typography.headlineSmall,
-            fontWeight = FontWeight.Bold,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-            textAlign = TextAlign.Center,
-        )
-        Text(
-            st.metadata?.artist ?: song.artist,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            textAlign = TextAlign.Center,
-            color = Color.White.copy(alpha = 0.7f),
-        )
-    }
-}
-
-@Composable
-private fun LyricsPage(
-    modifier: Modifier,
-    st: PlayerState,
-    song: Song,
-    art: ImageBitmap?,
-    lines: List<LyricLine>,
-    pos: LongState,
-    vm: PlayerViewModel,
-) {
-    Column(modifier.fillMaxWidth()) {
-        Spacer(Modifier.height(12.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            ArtworkImage(art, 56.dp)
-            Spacer(Modifier.width(12.dp))
-            Column {
-                Text(
-                    st.metadata?.title ?: song.title,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Text(
-                    st.metadata?.artist ?: song.artist,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    color = Color.White.copy(alpha = 0.7f),
-                )
-            }
-        }
-        LyricsView(
-            modifier = Modifier.fillMaxWidth().weight(1f),
-            lines = lines,
-            plain = st.metadata?.lyrics,
-            pos = pos,
-            onSeek = vm::seekTo,
-        )
-    }
-}
-
-@Composable
-private fun SeekBar(pos: LongState, durationMs: Long, onSeek: (Long) -> Unit) {
-    var dragging by remember { mutableStateOf(false) }
-    var dragValue by remember { mutableFloatStateOf(0f) }
-    val frac = if (durationMs > 0) (pos.longValue.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
-    val shown = if (dragging) dragValue else frac
-
-    Column(Modifier.fillMaxWidth()) {
-        Slider(
-            value = shown,
-            onValueChange = {
-                dragging = true
-                dragValue = it
-            },
-            onValueChangeFinished = {
-                onSeek((dragValue * durationMs).toLong())
-                dragging = false
-            },
-            colors = SliderDefaults.colors(
-                thumbColor = Color.White,
-                activeTrackColor = Color.White,
-                inactiveTrackColor = Color.White.copy(alpha = 0.25f),
-            ),
-        )
-        Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(formatTime((shown * durationMs).toLong()), color = Color.White.copy(alpha = 0.6f))
-            Text(formatTime(durationMs), color = Color.White.copy(alpha = 0.6f))
-        }
-    }
-}
+import kotlinx.coroutines.delay
 
 private fun formatTime(ms: Long): String {
     val s = (ms / 1000).coerceAtLeast(0)
@@ -255,35 +53,135 @@ private fun formatTime(ms: Long): String {
 }
 
 @Composable
-private fun Controls(backdrop: LayerBackdrop, playing: Boolean, vm: PlayerViewModel) {
-    Row(
-        Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceEvenly,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        GlassButton(backdrop, 60.dp, vm::previous) {
-            Icon(
-                painterResource(android.R.drawable.ic_media_previous),
-                contentDescription = "Previous",
-                modifier = Modifier.align(Alignment.Center),
-                tint = Color.White,
-            )
+fun NowPlayingScreen(vm: PlayerViewModel, art: Bitmap?, onClose: () -> Unit) {
+    val song = vm.current ?: return
+    val backdrop = rememberLayerBackdrop {
+        drawRect(Color(0xFF0B0B10))
+        drawContent()
+    }
+    var showLyrics by rememberSaveable { mutableStateOf(false) }
+    var pos by remember { mutableLongStateOf(vm.positionMs()) }
+    var dragging by remember { mutableStateOf<Float?>(null) }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            pos = vm.positionMs()
+            delay(200)
         }
-        GlassButton(backdrop, 84.dp, vm::toggle) {
-            Icon(
-                painterResource(if (playing) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play),
-                contentDescription = if (playing) "Pause" else "Play",
-                modifier = Modifier.align(Alignment.Center),
-                tint = Color.White,
-            )
+    }
+
+    Box(Modifier.fillMaxSize().background(Color(0xFF0B0B10))) {
+        Box(Modifier.fillMaxSize().layerBackdrop(backdrop)) {
+            ArtworkBackdrop(art)
+            Column(Modifier.fillMaxSize().statusBarsPadding().padding(top = 68.dp)) {
+                if (showLyrics) {
+                    LyricsView(vm, song, Modifier.weight(1f).fillMaxWidth())
+                } else {
+                    Box(
+                        Modifier.weight(1f).fillMaxWidth().padding(horizontal = 32.dp),
+                        contentAlignment = Alignment.TopCenter,
+                    ) {
+                        ArtworkImage(art, Modifier.fillMaxWidth().aspectRatio(1f), 28.dp)
+                    }
+                }
+            }
         }
-        GlassButton(backdrop, 60.dp, vm::next) {
-            Icon(
-                painterResource(android.R.drawable.ic_media_next),
-                contentDescription = "Next",
-                modifier = Modifier.align(Alignment.Center),
-                tint = Color.White,
+
+        Box(
+            Modifier
+                .statusBarsPadding()
+                .padding(16.dp)
+                .glass(backdrop, CircleShape)
+                .clickable(onClick = onClose)
+                .size(44.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(Icons.Rounded.KeyboardArrowDown, "Close", tint = Color.White)
+        }
+
+        Column(
+            Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(14.dp)
+                .glass(backdrop, RoundedCornerShape(36.dp))
+                .padding(horizontal = 20.dp, vertical = 16.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        song.title,
+                        color = Color.White,
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        song.artist,
+                        color = Color.White.copy(alpha = 0.7f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Text(
+                    "Lyrics",
+                    color = Color.White,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier
+                        .clip(CircleShape)
+                        .background(Color.White.copy(alpha = if (showLyrics) 0.32f else 0.12f))
+                        .clickable { showLyrics = !showLyrics }
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                )
+            }
+
+            Slider(
+                value = dragging ?: pos.toFloat(),
+                onValueChange = { dragging = it },
+                onValueChangeFinished = {
+                    dragging?.let { vm.seekTo(it.toLong()) }
+                    dragging = null
+                },
+                valueRange = 0f..maxOf(1f, vm.durationMs.toFloat()),
+                colors = SliderDefaults.colors(
+                    thumbColor = Color.White,
+                    activeTrackColor = Color.White,
+                    inactiveTrackColor = Color.White.copy(alpha = 0.3f),
+                ),
             )
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text(formatTime((dragging ?: pos.toFloat()).toLong()), color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp)
+                Text(formatTime(vm.durationMs), color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp)
+            }
+
+            Row(
+                Modifier.fillMaxWidth().padding(top = 6.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(onClick = vm::previous, modifier = Modifier.size(56.dp)) {
+                    Icon(Icons.Rounded.SkipPrevious, "Previous", tint = Color.White, modifier = Modifier.size(36.dp))
+                }
+                Box(
+                    Modifier
+                        .glass(backdrop, CircleShape, Color.White.copy(alpha = 0.22f))
+                        .clickable(onClick = vm::togglePlay)
+                        .size(68.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        if (vm.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                        "Play / pause",
+                        tint = Color.White,
+                        modifier = Modifier.size(40.dp),
+                    )
+                }
+                IconButton(onClick = vm::next, modifier = Modifier.size(56.dp)) {
+                    Icon(Icons.Rounded.SkipNext, "Next", tint = Color.White, modifier = Modifier.size(36.dp))
+                }
+            }
         }
     }
 }
