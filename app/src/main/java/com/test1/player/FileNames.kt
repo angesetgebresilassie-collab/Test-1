@@ -4,8 +4,11 @@ data class ParsedName(val artist: String?, val title: String)
 
 /** Extracts artist / title from a song's file name and strips download junk. */
 object FileNames {
-    private val extension =
-        Regex("""\.(mp3|m4a|aac|flac|ogg|opus|wav|wma|amr|mka)$""", RegexOption.IGNORE_CASE)
+    // Audio extensions, also catches doubled ones like "song.mp3.m4a".
+    private val extension = Regex(
+        """\.(mp3|m4a|m4b|mp4|aac|flac|ogg|oga|opus|wav|wma|amr|mka|webm|3gp|mpga|mp2|aiff?|ape)$""",
+        RegexOption.IGNORE_CASE,
+    )
 
     // Bracketed groups that only hold junk: (Official Audio), [HD], (Lyrics), (www.site.com) ...
     private val junkGroup = Regex(
@@ -18,7 +21,9 @@ object FileNames {
     private val dash = Regex("""\s[-\u2013\u2014]\s""")
 
     fun parse(fileName: String): ParsedName {
-        var s = fileName.replace(extension, "").replace('_', ' ')
+        var s = fileName
+        while (extension.containsMatchIn(s)) s = s.replace(extension, "")
+        s = s.replace('_', ' ')
         s = junkGroup.replace(s, "")
         s = site.replace(s, "")
         s = leadingTrack.replace(s, "")
