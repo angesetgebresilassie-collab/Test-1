@@ -72,7 +72,9 @@ class MainActivity : ComponentActivity() {
             }
 
             MaterialTheme(colorScheme = darkColorScheme()) {
-                Surface(Modifier.fillMaxSize(), color = Color(0xFF05060A)) {
+                // contentColor: a custom background colour has no matching content colour, which
+                // left every Text without an explicit colour black on the dark background.
+                Surface(Modifier.fillMaxSize(), color = Color(0xFF05060A), contentColor = Color.White) {
                     Home(
                         vm = vm,
                         granted = granted,
