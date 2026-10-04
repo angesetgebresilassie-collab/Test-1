@@ -3,6 +3,7 @@ package com.test1.player
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -12,6 +13,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -24,6 +26,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
@@ -67,8 +70,11 @@ import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import kotlin.math.roundToInt
 
-private val Accent = LiquidBlue
 private val BaseDark = Color(0xFF040406)
+
+// Dark frosted glass used by the bottom bar, search button and mini player.
+private val BarTint = Color(0xFF2B2B30).copy(alpha = 0.42f)
+private val BarBlur = 28.dp
 
 private enum class HomeTab(val label: String, val icon: ImageVector) {
     Songs("Songs", Icons.Filled.MusicNote),
@@ -116,6 +122,12 @@ fun Home(vm: PlayerViewModel, granted: Boolean, onGrant: () -> Unit, onOpenSetti
     val backdrop = rememberLayerBackdrop()
     val art = rememberArtwork(st.current, st.metadata?.artworkUrl)
     val accent = remember(art) { art?.accentColor() }
+    // The whole UI follows the colour of the track that is playing (blue when nothing is).
+    val accentColor by animateColorAsState(
+        targetValue = accent ?: LiquidBlue,
+        animationSpec = tween(700),
+        label = "accent",
+    )
 
     var tab by remember { mutableStateOf(HomeTab.Songs) }
     var query by remember { mutableStateOf("") }
@@ -125,6 +137,13 @@ fun Home(vm: PlayerViewModel, granted: Boolean, onGrant: () -> Unit, onOpenSetti
     var nowPlayingOpen by remember { mutableStateOf(false) }
     val lastDetail = remember { mutableStateOf<Detail?>(null) }
     if (detail != null) lastDetail.value = detail
+
+    // The UI behind the full-screen player / sheets scales back a little (depth effect).
+    val depth by animateFloatAsState(
+        targetValue = if ((nowPlayingOpen && st.current != null) || dialog != null) 1f else 0f,
+        animationSpec = spring(dampingRatio = 0.8f, stiffness = 300f),
+        label = "depth",
+    )
 
     val q = query.trim()
     val albums = remember(songs) {
@@ -151,7 +170,7 @@ fun Home(vm: PlayerViewModel, granted: Boolean, onGrant: () -> Unit, onOpenSetti
         if (q.isEmpty()) playlists else playlists.filter { it.name.contains(q, true) }
     }
 
-    val bottomPad = if (st.current != null) 270.dp else 130.dp
+    val bottomPad = if (st.current != null) 280.dp else 140.dp
 
     fun resolve(d: Detail): DetailData? = when (d) {
         is Detail.AlbumD -> albums.firstOrNull { it.id == d.id }
@@ -174,163 +193,177 @@ fun Home(vm: PlayerViewModel, granted: Boolean, onGrant: () -> Unit, onOpenSetti
     BackHandler(enabled = detail != null) { detail = null }
     BackHandler(enabled = searching) { toggleSearch() }
 
-    Box(Modifier.fillMaxSize().background(BaseDark)) {
-        // Everything the glass refracts lives in this layer.
-        Box(Modifier.layerBackdrop(backdrop).fillMaxSize()) {
-            LiquidBackground(accent, art)
-        }
+    CompositionLocalProvider(LocalAccent provides accentColor) {
+        Box(Modifier.fillMaxSize().background(BaseDark)) {
+            // Everything except the full-screen player and sheets scales back while those are open.
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        val s = 1f - 0.07f * depth
+                        scaleX = s
+                        scaleY = s
+                        alpha = 1f - 0.2f * depth
+                    }
+            ) {
+                // Everything the glass refracts lives in this layer.
+                Box(Modifier.layerBackdrop(backdrop).fillMaxSize()) {
+                    LiquidBackground(accent, art)
+                }
 
-        // Main content (kept composed but hidden while a detail page is open, so scroll positions survive).
-        Column(
-            Modifier
-                .fillMaxSize()
-                .statusBarsPadding()
-                .graphicsLayer { alpha = if (detail != null) 0f else 1f }
-        ) {
-            Header(
-                title = tab.label,
-                backdrop = backdrop,
-                searching = searching,
-                query = query,
-                onQuery = { query = it },
-                onRefresh = vm::rescan,
-            )
-            Box(Modifier.weight(1f).fillMaxWidth()) {
-                when {
-                    !granted -> MessageCard(
-                        backdrop,
-                        "Allow access to your music",
-                        "The player needs permission to read audio files on this device. Nothing leaves your phone.",
-                    ) {
-                        GlassPill(backdrop, "Allow access", onGrant, Modifier.fillMaxWidth(), style = LiquidStyle.Tinted)
-                        GlassPill(backdrop, "Open app settings", onOpenSettings, Modifier.fillMaxWidth())
-                    }
-                    !loaded || (scanning && songs.isEmpty()) -> MessageCard(
-                        backdrop,
-                        "Looking for your music…",
-                        "Reading your device's media library.",
-                    ) {
-                        CircularProgressIndicator(color = Color.White)
-                    }
-                    songs.isEmpty() -> MessageCard(
-                        backdrop,
-                        "No music found",
-                        "Nothing playable showed up in the media library. If you just copied songs onto the phone, tap rescan so Android indexes them.",
-                    ) {
-                        GlassPill(
-                            backdrop,
-                            "Rescan storage",
-                            { vm.rescan() },
-                            Modifier.fillMaxWidth(),
-                            Icons.Filled.Refresh,
-                            style = LiquidStyle.Tinted,
-                        )
-                    }
-                    else -> Crossfade(targetState = tab, label = "tab") { t ->
-                        when (t) {
-                            HomeTab.Songs -> SongList(
-                                songs = shownSongs,
-                                grouped = q.isEmpty(),
-                                backdrop = backdrop,
-                                st = st,
-                                bottomPad = bottomPad,
-                                onPlay = { vm.play(it, shownSongs) },
-                                onPlayAll = { vm.playAll(shownSongs) },
-                                onShuffle = { vm.shuffleAll(shownSongs) },
-                                onMenu = { dialog = Dlg.SongMenu(it, null) },
-                            )
-                            HomeTab.Albums -> AlbumGrid(shownAlbums, bottomPad) { detail = Detail.AlbumD(it.id) }
-                            HomeTab.Artists -> ArtistList(shownArtists, bottomPad) { detail = Detail.ArtistD(it.name) }
-                            HomeTab.Playlists -> PlaylistList(
-                                playlists = shownPlaylists,
-                                songById = songById,
-                                bottomPad = bottomPad,
-                                onNew = { dialog = Dlg.NewPlaylist(emptyList()) },
-                                onOpen = { detail = Detail.PlaylistD(it.id) },
-                            )
+                // Main content (kept composed but hidden while a detail page is open, so scroll positions survive).
+                Column(
+                    Modifier
+                        .fillMaxSize()
+                        .statusBarsPadding()
+                        .graphicsLayer { alpha = if (detail != null) 0f else 1f }
+                ) {
+                    Header(
+                        title = tab.label,
+                        backdrop = backdrop,
+                        searching = searching,
+                        query = query,
+                        onQuery = { query = it },
+                        onRefresh = vm::rescan,
+                    )
+                    Box(Modifier.weight(1f).fillMaxWidth()) {
+                        when {
+                            !granted -> MessageCard(
+                                backdrop,
+                                "Allow access to your music",
+                                "The player needs permission to read audio files on this device. Nothing leaves your phone.",
+                            ) {
+                                GlassPill(backdrop, "Allow access", onGrant, Modifier.fillMaxWidth(), style = LiquidStyle.Tinted)
+                                GlassPill(backdrop, "Open app settings", onOpenSettings, Modifier.fillMaxWidth())
+                            }
+                            !loaded || (scanning && songs.isEmpty()) -> MessageCard(
+                                backdrop,
+                                "Looking for your music…",
+                                "Reading your device's media library.",
+                            ) {
+                                CircularProgressIndicator(color = Color.White)
+                            }
+                            songs.isEmpty() -> MessageCard(
+                                backdrop,
+                                "No music found",
+                                "Nothing playable showed up in the media library. If you just copied songs onto the phone, tap rescan so Android indexes them.",
+                            ) {
+                                GlassPill(
+                                    backdrop,
+                                    "Rescan storage",
+                                    { vm.rescan() },
+                                    Modifier.fillMaxWidth(),
+                                    Icons.Filled.Refresh,
+                                    style = LiquidStyle.Tinted,
+                                )
+                            }
+                            else -> Crossfade(targetState = tab, label = "tab") { t ->
+                                when (t) {
+                                    HomeTab.Songs -> SongList(
+                                        songs = shownSongs,
+                                        grouped = q.isEmpty(),
+                                        backdrop = backdrop,
+                                        st = st,
+                                        bottomPad = bottomPad,
+                                        onPlay = { vm.play(it, shownSongs) },
+                                        onPlayAll = { vm.playAll(shownSongs) },
+                                        onShuffle = { vm.shuffleAll(shownSongs) },
+                                        onMenu = { dialog = Dlg.SongMenu(it, null) },
+                                    )
+                                    HomeTab.Albums -> AlbumGrid(shownAlbums, bottomPad) { detail = Detail.AlbumD(it.id) }
+                                    HomeTab.Artists -> ArtistList(shownArtists, bottomPad) { detail = Detail.ArtistD(it.name) }
+                                    HomeTab.Playlists -> PlaylistList(
+                                        playlists = shownPlaylists,
+                                        songById = songById,
+                                        bottomPad = bottomPad,
+                                        onNew = { dialog = Dlg.NewPlaylist(emptyList()) },
+                                        onOpen = { detail = Detail.PlaylistD(it.id) },
+                                    )
+                                }
+                            }
                         }
                     }
                 }
-            }
-        }
 
-        // Album / artist / playlist page.
-        AnimatedVisibility(
-            visible = detail != null,
-            enter = fadeIn(tween(250)) + slideInVertically(tween(350)) { it / 8 },
-            exit = fadeOut(tween(200)),
-        ) {
-            val data = lastDetail.value?.let { resolve(it) }
-            if (data != null) {
-                DetailScreen(
-                    data = data,
-                    st = st,
-                    bottomPad = bottomPad,
-                    onBack = { detail = null },
-                    onPlay = { vm.play(it, data.songs) },
-                    onPlayAll = { vm.playAll(data.songs) },
-                    onShuffle = { vm.shuffleAll(data.songs) },
-                    onAddAll = { dialog = Dlg.Pick(data.songs) },
-                    onMenu = { dialog = Dlg.SongMenu(it, data.playlistId) },
-                    onDelete = data.playlistId?.let { id ->
-                        {
-                            vm.deletePlaylist(id)
+                // Album / artist / playlist page.
+                AnimatedVisibility(
+                    visible = detail != null,
+                    enter = fadeIn(tween(250)) + slideInVertically(tween(350)) { it / 8 },
+                    exit = fadeOut(tween(200)),
+                ) {
+                    val data = lastDetail.value?.let { resolve(it) }
+                    if (data != null) {
+                        DetailScreen(
+                            data = data,
+                            st = st,
+                            bottomPad = bottomPad,
+                            onBack = { detail = null },
+                            onPlay = { vm.play(it, data.songs) },
+                            onPlayAll = { vm.playAll(data.songs) },
+                            onShuffle = { vm.shuffleAll(data.songs) },
+                            onAddAll = { dialog = Dlg.Pick(data.songs) },
+                            onMenu = { dialog = Dlg.SongMenu(it, data.playlistId) },
+                            onDelete = data.playlistId?.let { id ->
+                                {
+                                    vm.deletePlaylist(id)
+                                    detail = null
+                                }
+                            },
+                        )
+                    }
+                }
+
+                // Floating mini player, then the tab bar + search button.
+                Column(
+                    Modifier
+                        .align(Alignment.BottomCenter)
+                        .navigationBarsPadding()
+                        .padding(horizontal = 16.dp)
+                        .padding(bottom = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    st.current?.let { song ->
+                        MiniPlayer(song, st, backdrop, vm) { nowPlayingOpen = true }
+                    }
+                    BottomBar(
+                        selected = tab,
+                        searching = searching,
+                        backdrop = backdrop,
+                        onTab = {
+                            tab = it
                             detail = null
-                        }
-                    },
+                        },
+                        onSearch = {
+                            detail = null
+                            toggleSearch()
+                        },
+                    )
+                }
+            }
+
+            // Full-screen player.
+            AnimatedVisibility(
+                visible = nowPlayingOpen && st.current != null,
+                enter = slideInVertically(tween(450)) { it } + fadeIn(tween(450)),
+                exit = slideOutVertically(tween(350)) { it } + fadeOut(tween(350)),
+            ) {
+                st.current?.let { song ->
+                    NowPlayingScreen(song, st, vm) { nowPlayingOpen = false }
+                }
+            }
+
+            // Sheets: song menu, playlist picker, new playlist.
+            dialog?.let { d ->
+                DialogHost(
+                    dialog = d,
+                    backdrop = backdrop,
+                    playlists = playlists,
+                    vm = vm,
+                    onDismiss = { dialog = null },
+                    onSwitch = { dialog = it },
                 )
+                BackHandler { dialog = null }
             }
-        }
-
-        // Floating mini player, then the tab bar + search button.
-        Column(
-            Modifier
-                .align(Alignment.BottomCenter)
-                .navigationBarsPadding()
-                .padding(horizontal = 16.dp)
-                .padding(bottom = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            st.current?.let { song ->
-                MiniPlayer(song, st, backdrop, vm) { nowPlayingOpen = true }
-            }
-            BottomBar(
-                selected = tab,
-                searching = searching,
-                backdrop = backdrop,
-                onTab = {
-                    tab = it
-                    detail = null
-                },
-                onSearch = {
-                    detail = null
-                    toggleSearch()
-                },
-            )
-        }
-
-        // Full-screen player.
-        AnimatedVisibility(
-            visible = nowPlayingOpen && st.current != null,
-            enter = slideInVertically(tween(450)) { it } + fadeIn(tween(450)),
-            exit = slideOutVertically(tween(350)) { it } + fadeOut(tween(350)),
-        ) {
-            st.current?.let { song ->
-                NowPlayingScreen(song, st, vm) { nowPlayingOpen = false }
-            }
-        }
-
-        // Sheets: song menu, playlist picker, new playlist.
-        dialog?.let { d ->
-            DialogHost(
-                dialog = d,
-                backdrop = backdrop,
-                playlists = playlists,
-                vm = vm,
-                onDismiss = { dialog = null },
-                onSwitch = { dialog = it },
-            )
-            BackHandler { dialog = null }
         }
     }
 }
@@ -405,8 +438,9 @@ private fun SearchField(backdrop: LayerBackdrop, query: String, onQuery: (String
 }
 
 /**
- * Liquid glass tab bar: a frosted pill with a glass "lens" under the selected tab that slides
- * between tabs with a spring, and swells while you drag it. The selected tab turns blue.
+ * Liquid glass tab bar: a heavily blurred, dark frosted pill with a lighter glass "lens" under
+ * the selected tab that slides between tabs with a spring and swells while you drag it.
+ * The selected tab takes the accent colour of the playing track.
  */
 @Composable
 private fun BottomBar(
@@ -416,13 +450,14 @@ private fun BottomBar(
     onTab: (HomeTab) -> Unit,
     onSearch: () -> Unit,
 ) {
+    val accent = LocalAccent.current
     val tabs = HomeTab.values()
     Row(
         Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        BoxWithConstraints(Modifier.weight(1f).height(64.dp)) {
+        BoxWithConstraints(Modifier.weight(1f).height(68.dp)) {
             val inner = 5.dp
             val tabW = (maxWidth - inner * 2) / tabs.size
             val tabWpx = with(LocalDensity.current) { tabW.toPx() }
@@ -443,13 +478,20 @@ private fun BottomBar(
             val indicatorPx = if (dragging) dragPx else animPx
             val shown = (indicatorPx / tabWpx + 0.5f).toInt().coerceIn(0, tabs.lastIndex)
 
-            // Frosted bar.
+            // Blurred frosted bar.
             GlassSurface(
                 backdrop = backdrop,
                 modifier = Modifier.fillMaxSize(),
-                corner = 32.dp,
-                tint = Color(0xFF8A8F94).copy(alpha = 0.30f),
-            ) {}
+                corner = 34.dp,
+                tint = BarTint,
+                blurRadius = BarBlur,
+            ) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .border(0.8.dp, Color.White.copy(alpha = 0.16f), RoundedCornerShape(34.dp))
+                )
+            }
 
             // Sliding glass lens under the selected tab.
             GlassSurface(
@@ -464,9 +506,16 @@ private fun BottomBar(
                         scaleX = s
                         scaleY = s
                     },
-                corner = 27.dp,
-                tint = Color.White.copy(alpha = 0.16f + 0.10f * swell),
-            ) {}
+                corner = 29.dp,
+                tint = Color.White.copy(alpha = 0.20f + 0.10f * swell),
+                blurRadius = 16.dp,
+            ) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .border(0.8.dp, Color.White.copy(alpha = 0.22f), RoundedCornerShape(29.dp))
+                )
+            }
 
             // Icons + labels (also handle taps and drag-to-select).
             Row(
@@ -493,33 +542,39 @@ private fun BottomBar(
                     },
             ) {
                 tabs.forEachIndexed { i, t ->
-                    val color = if (i == shown) Accent else Color.White
+                    val color = if (i == shown) accent else Color.White.copy(alpha = 0.62f)
                     Column(
                         Modifier
                             .weight(1f)
                             .fillMaxHeight()
-                            .clip(RoundedCornerShape(27.dp))
+                            .clip(RoundedCornerShape(29.dp))
                             .clickable { onTab(t) },
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center,
                     ) {
-                        Icon(t.icon, contentDescription = t.label, modifier = Modifier.size(22.dp), tint = color)
-                        Text(t.label, fontSize = 10.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, color = color)
+                        Icon(t.icon, contentDescription = t.label, modifier = Modifier.size(24.dp), tint = color)
+                        Text(t.label, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, color = color)
                     }
                 }
             }
         }
         GlassButton(
             backdrop = backdrop,
-            size = 64.dp,
+            size = 68.dp,
             onClick = onSearch,
-            tint = if (searching) Accent.copy(alpha = 0.35f) else Color(0xFF8A8F94).copy(alpha = 0.30f),
+            tint = if (searching) accent.copy(alpha = 0.35f) else BarTint,
+            blurRadius = BarBlur,
         ) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .border(0.8.dp, Color.White.copy(alpha = 0.16f), CircleShape)
+            )
             Icon(
                 Icons.Filled.Search,
                 contentDescription = "Search",
                 modifier = Modifier.align(Alignment.Center).size(26.dp),
-                tint = Accent,
+                tint = accent,
             )
         }
     }
@@ -538,7 +593,14 @@ private fun MiniPlayer(
         backdrop = backdrop,
         modifier = Modifier.fillMaxWidth().height(60.dp).clip(RoundedCornerShape(30.dp)).clickable(onClick = onOpen),
         corner = 30.dp,
+        tint = BarTint,
+        blurRadius = BarBlur,
     ) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .border(0.8.dp, Color.White.copy(alpha = 0.16f), RoundedCornerShape(30.dp))
+        )
         Row(
             Modifier.fillMaxSize().padding(start = 9.dp, end = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -639,6 +701,7 @@ private fun TrackRow(
     onClick: () -> Unit,
     onMenu: () -> Unit,
 ) {
+    val accent = LocalAccent.current
     Column(Modifier.fillMaxWidth()) {
         Row(
             Modifier
@@ -652,7 +715,7 @@ private fun TrackRow(
                     "$index",
                     modifier = Modifier.width(36.dp),
                     fontSize = 15.sp,
-                    color = if (isCurrent) Accent else Color.White.copy(alpha = 0.55f),
+                    color = if (isCurrent) accent else Color.White.copy(alpha = 0.55f),
                 )
             } else {
                 val art = rememberArtwork(song, null)
@@ -666,7 +729,7 @@ private fun TrackRow(
                     fontWeight = FontWeight.Medium,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    color = if (isCurrent) Accent else Color.White,
+                    color = if (isCurrent) accent else Color.White,
                 )
                 if (subtitle != null) {
                     Text(
@@ -836,6 +899,7 @@ private fun PlaylistList(
     onNew: () -> Unit,
     onOpen: (Playlist) -> Unit,
 ) {
+    val accent = LocalAccent.current
     LazyColumn(
         contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 4.dp, bottom = bottomPad),
     ) {
@@ -846,13 +910,13 @@ private fun PlaylistList(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Box(
-                        Modifier.size(56.dp).clip(RoundedCornerShape(10.dp)).background(Accent.copy(alpha = 0.2f)),
+                        Modifier.size(56.dp).clip(RoundedCornerShape(10.dp)).background(accent.copy(alpha = 0.2f)),
                         contentAlignment = Alignment.Center,
                     ) {
-                        Icon(Icons.Filled.Add, contentDescription = null, tint = Accent)
+                        Icon(Icons.Filled.Add, contentDescription = null, tint = accent)
                     }
                     Spacer(Modifier.width(14.dp))
-                    Text("New playlist", fontSize = 17.sp, fontWeight = FontWeight.Medium, color = Accent)
+                    Text("New playlist", fontSize = 17.sp, fontWeight = FontWeight.Medium, color = accent)
                 }
                 Hairline(70.dp)
             }
