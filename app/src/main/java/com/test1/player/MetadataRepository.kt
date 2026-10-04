@@ -17,6 +17,25 @@ import java.text.Normalizer
 class MetadataRepository(private val cache: MetadataCache) {
     private val retried = mutableSetOf<Long>()
 
+    private fun fullName(song: Song): String {
+        val parsed = FileNames.parse(song.fileName.ifBlank { song.title })
+        return listOfNotNull(parsed.artist, parsed.title).joinToString(" ")
+    }
+
+    /** Already-saved lookup result (no network). */
+    fun cached(song: Song): CachedMetadata? = cache.get(song.id)
+
+    /**
+     * Title / artist / artwork only (no lyrics) - used by the background pass over the whole
+     * library. Saved only when a real match was found. Lyrics are fetched when the song plays.
+     */
+    suspend fun lookup(song: Song): CachedMetadata? = withContext(Dispatchers.IO) {
+        val i = runCatching { itunes(fullName(song)) }.getOrNull() ?: return@withContext null
+        val result = CachedMetadata(i.title, i.artist, i.album, i.artworkUrl, null, null)
+        cache.put(song.id, result)
+        result
+    }
+
     suspend fun enrich(song: Song): CachedMetadata = withContext(Dispatchers.IO) {
         val durationSec = song.durationMs / 1000
         val parsed = FileNames.parse(song.fileName.ifBlank { song.title })
