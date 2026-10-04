@@ -27,6 +27,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -55,7 +56,13 @@ import kotlin.math.sin
 
 val LiquidBlue = Color(0xFF2E8BFF)
 
-/** Real Liquid Glass: samples the layer backdrop, blurs, saturates and refracts at the edges. */
+/** The UI accent colour. Home provides the current track's artwork colour here (blue when idle). */
+val LocalAccent = compositionLocalOf { LiquidBlue }
+
+/**
+ * Real Liquid Glass: samples the layer backdrop, blurs, saturates and refracts at the edges.
+ * [blurRadius] overrides the default blur (a bigger value = more frosted).
+ */
 @Composable
 fun GlassSurface(
     backdrop: LayerBackdrop,
@@ -63,6 +70,7 @@ fun GlassSurface(
     corner: Dp = 24.dp,
     strong: Boolean = true,
     tint: Color = Color.White.copy(alpha = 0.12f),
+    blurRadius: Dp? = null,
     content: @Composable BoxScope.() -> Unit,
 ) {
     Box(
@@ -71,7 +79,7 @@ fun GlassSurface(
             shape = { RoundedCornerShape(corner) },
             effects = {
                 vibrancy()
-                blur(if (strong) 8.dp.toPx() else 5.dp.toPx())
+                blur((blurRadius ?: if (strong) 8.dp else 5.dp).toPx())
                 lens(
                     if (strong) 16.dp.toPx() else 8.dp.toPx(),
                     if (strong) 32.dp.toPx() else 16.dp.toPx(),
@@ -102,6 +110,7 @@ fun GlassButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     tint: Color = Color.White.copy(alpha = 0.10f),
+    blurRadius: Dp? = null,
     content: @Composable BoxScope.() -> Unit,
 ) {
     val source = remember { MutableInteractionSource() }
@@ -119,6 +128,7 @@ fun GlassButton(
             .clickable(interactionSource = source, indication = null, onClick = onClick),
         corner = size / 2,
         tint = tint.copy(alpha = (tint.alpha + 0.14f * p).coerceAtMost(1f)),
+        blurRadius = blurRadius,
         content = content,
     )
 }
@@ -128,6 +138,7 @@ enum class LiquidStyle { Transparent, Surface, Tinted }
 /**
  * The three liquid button styles: Transparent (pure refraction), Surface (frosted) and
  * Tinted (solid colour with glass edges). All of them swell when pressed.
+ * Tinted buttons use the current accent colour unless [color] is given.
  */
 @Composable
 fun LiquidButton(
@@ -137,7 +148,7 @@ fun LiquidButton(
     modifier: Modifier = Modifier,
     icon: ImageVector? = null,
     style: LiquidStyle = LiquidStyle.Surface,
-    color: Color = LiquidBlue,
+    color: Color = LocalAccent.current,
     height: Dp = 52.dp,
 ) {
     val source = remember { MutableInteractionSource() }
@@ -184,7 +195,7 @@ fun GlassPill(
     height: Dp = 48.dp,
     style: LiquidStyle = LiquidStyle.Surface,
 ) {
-    LiquidButton(backdrop, label, onClick, modifier, icon, style, LiquidBlue, height)
+    LiquidButton(backdrop, label, onClick, modifier, icon, style, LocalAccent.current, height)
 }
 
 @Composable
