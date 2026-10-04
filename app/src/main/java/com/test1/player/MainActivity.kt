@@ -1,91 +1,76 @@
 package com.test1.player
 
 import android.Manifest
-import android.content.Intent
+import android.content.Context
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.provider.Settings
 import androidx.activity.ComponentActivity
-import androidx.activity.SystemBarStyle
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
-import androidx.lifecycle.viewmodel.compose.viewModel
 
 class MainActivity : ComponentActivity() {
+    private val vm: PlayerViewModel by viewModels()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // The app is always dark, so keep system bar icons light regardless of the phone's theme.
-        enableEdgeToEdge(
-            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
-            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
-        )
+        enableEdgeToEdge()
         setContent {
-            val vm: PlayerViewModel = viewModel()
-            val ctx = LocalContext.current
-
-            // Android 13+ has a dedicated audio permission; older versions need storage access.
-            val audioPermission =
-                if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_AUDIO
-                else Manifest.permission.READ_EXTERNAL_STORAGE
-
-            var granted by remember {
-                mutableStateOf(
-                    ContextCompat.checkSelfPermission(ctx, audioPermission) == PackageManager.PERMISSION_GRANTED
-                )
-            }
-
-            val askNotifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
-            val askAudio = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
-                granted = ok
-            }
-
-            LaunchedEffect(granted) {
-                if (granted) {
-                    vm.connect()
-                    vm.load()
-                    if (Build.VERSION.SDK_INT >= 33 &&
-                        ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) !=
-                        PackageManager.PERMISSION_GRANTED
-                    ) {
-                        askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
-                    }
-                } else {
-                    askAudio.launch(audioPermission)
-                }
-            }
-
             MaterialTheme(colorScheme = darkColorScheme()) {
-                Surface(Modifier.fillMaxSize(), color = Color(0xFF05060A)) {
-                    Home(
-                        vm = vm,
-                        granted = granted,
-                        onGrant = { askAudio.launch(audioPermission) },
-                        onOpenSettings = {
-                            ctx.startActivity(
-                                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
-                                    .setData(Uri.fromParts("package", ctx.packageName, null))
-                            )
-                        },
-                    )
-                }
+                PermissionGate(vm) { PlayerApp(vm) }
             }
+        }
+    }
+}
+
+private fun audioPermission() =
+    if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_AUDIO
+    else Manifest.permission.READ_EXTERNAL_STORAGE
+
+private fun hasAudio(ctx: Context) =
+    ContextCompat.checkSelfPermission(ctx, audioPermission()) == PackageManager.PERMISSION_GRANTED
+
+@Composable
+private fun PermissionGate(vm: PlayerViewModel, content: @Composable () -> Unit) {
+    val ctx = LocalContext.current
+    val perms = remember {
+        if (Build.VERSION.SDK_INT >= 33) {
+            arrayOf(Manifest.permission.READ_MEDIA_AUDIO, Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+        }
+    }
+    var granted by remember { mutableStateOf(hasAudio(ctx)) }
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        granted = hasAudio(ctx)
+    }
+    LaunchedEffect(Unit) { if (!granted) launcher.launch(perms) }
+    LaunchedEffect(granted) { if (granted) vm.loadLibrary() }
+
+    if (granted) {
+        content()
+    } else {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Button(onClick = { launcher.launch(perms) }) { Text("Allow music access") }
         }
     }
 }
