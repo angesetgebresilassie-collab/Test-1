@@ -31,8 +31,9 @@ class MetadataRepository(private val cache: MetadataCache) {
         }
 
         val parsed = FileNames.parse(song.fileName.ifBlank { song.title })
-        val lookupOk: Boolean
-        val i = runCatching { itunes(parsed) }.also { lookupOk = it.isSuccess }.getOrNull()
+        val attempt = runCatching { itunes(parsed) }
+        val lookupOk = attempt.isSuccess
+        val i = attempt.getOrNull()
         val title = i?.title?.takeIf { it.isNotBlank() } ?: parsed.title
         val artist = i?.artist?.takeIf { it.isNotBlank() } ?: parsed.artist ?: song.artist
         val album = i?.album?.takeIf { it.isNotBlank() } ?: song.album
@@ -47,10 +48,11 @@ class MetadataRepository(private val cache: MetadataCache) {
 
     private val noise = setOf("feat", "ft", "featuring", "with", "prod", "official", "audio", "video", "lyrics")
     private val brackets = Regex("""\s*[(\[{][^)\]}]*[)\]}]""")
+    private val nonWord = Regex("""[^\p{L}\p{N}]+""")
 
     private fun tokens(s: String): Set<String> =
         s.lowercase()
-            .replace(Regex("""[^\p{L}\p{N}]+"""), " ")
+            .replace(nonWord, " ")
             .split(' ')
             .filter { it.isNotEmpty() && it !in noise }
             .toSet()
@@ -63,7 +65,7 @@ class MetadataRepository(private val cache: MetadataCache) {
             .getJSONArray("results")
 
         val wantTitle = tokens(p.title)
-        val wantArtist = p.artist?.let { tokens(it) }.orEmpty()
+        val wantArtist: Set<String> = p.artist?.let { tokens(it) } ?: emptySet()
         if (wantTitle.isEmpty()) return null
 
         var best: JSONObject? = null
