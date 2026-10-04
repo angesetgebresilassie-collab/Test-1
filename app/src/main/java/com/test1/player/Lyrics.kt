@@ -1,127 +1,216 @@
 package com.test1.player
 
-import android.content.Context
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import org.json.JSONArray
-import org.json.JSONObject
-import java.io.File
-import java.net.URLEncoder
-import kotlin.math.abs
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.LongState
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 
-data class LyricWord(val timeMs: Long, val text: String)
+data class LyricWord(val text: String, val startMs: Long, val endMs: Long)
 
-/** timeMs < 0 means the lyrics are plain (not time-synced). */
-data class LyricLine(val timeMs: Long, val text: String, val words: List<LyricWord>?)
+data class LyricLine(
+    val startMs: Long,
+    val endMs: Long,
+    val text: String,
+    val words: List<LyricWord>,
+)
 
-sealed interface LyricsState {
-    data object Loading : LyricsState
-    data object None : LyricsState
-    data class Ready(val lines: List<LyricLine>) : LyricsState
+private val TIME_TAG = Regex("""\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?]""")
+private val WORD_TAG = Regex("""<\d+:\d+(?:[.:]\d+)?>""")
+
+/**
+ * Parses LRC. LRC only has line timestamps, so each line's duration is spread
+ * across its words (weighted by word length) to get smooth word-by-word timing.
+ */
+fun parseLrc(lrc: String?): List<LyricLine> {
+    if (lrc.isNullOrBlank()) return emptyList()
+    val raw = mutableListOf<Pair<Long, String>>()
+    for (line in lrc.lines()) {
+        val tags = TIME_TAG.findAll(line).toList()
+        if (tags.isEmpty()) continue
+        val text = line.substring(tags.last().range.last + 1).replace(WORD_TAG, "").trim()
+        for (m in tags) {
+            val minutes = m.groupValues[1].toLong()
+            val seconds = m.groupValues[2].toLong()
+            val frac = m.groupValues[3]
+            val millis = when (frac.length) {
+                0 -> 0L
+                1 -> frac.toLong() * 100
+                2 -> frac.toLong() * 10
+                else -> frac.take(3).toLong()
+            }
+            raw += (minutes * 60_000 + seconds * 1_000 + millis) to text
+        }
+    }
+    raw.sortBy { it.first }
+    val out = mutableListOf<LyricLine>()
+    for (i in raw.indices) {
+        val (start, text) = raw[i]
+        if (text.isBlank()) continue
+        val nextStart = raw.getOrNull(i + 1)?.first ?: (start + 5_000)
+        out += buildLine(start, nextStart, text)
+    }
+    return out
 }
 
-object LrcParser {
-    private val lineTag = Regex("""\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\]""")
-    private val wordTag = Regex("""<(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?>""")
-
-    private fun toMs(m: MatchResult): Long {
-        val min = m.groupValues[1].toLong()
-        val sec = m.groupValues[2].toLong()
-        val frac = m.groupValues[3].padEnd(3, '0').take(3).toLongOrNull() ?: 0L
-        return min * 60_000 + sec * 1000 + frac
+private fun buildLine(start: Long, nextStart: Long, text: String): LyricLine {
+    val parts = text.split(Regex("\\s+")).filter { it.isNotEmpty() }
+    val totalWeight = parts.sumOf { it.length + 1 }.coerceAtLeast(1)
+    val gap = (nextStart - start).coerceAtLeast(1)
+    val singing = (totalWeight * 95L + 500L).coerceAtMost(gap).coerceAtLeast(300L)
+    var acc = 0
+    val words = parts.map { w ->
+        val weight = w.length + 1
+        val s = start + singing * acc / totalWeight
+        acc += weight
+        val e = start + singing * acc / totalWeight
+        LyricWord(w, s, e)
     }
-
-    /** Supports standard LRC and enhanced LRC (<mm:ss.xx> word tags). */
-    fun parse(text: String): List<LyricLine> {
-        val out = ArrayList<LyricLine>()
-        for (raw in text.lines()) {
-            val tags = lineTag.findAll(raw).toList()
-            if (tags.isEmpty()) continue
-            val body = raw.substring(tags.last().range.last + 1)
-            val wm = wordTag.findAll(body).toList()
-            val words = if (wm.isEmpty()) null else wm.mapIndexedNotNull { i, m ->
-                val end = if (i + 1 < wm.size) wm[i + 1].range.first else body.length
-                val t = body.substring(m.range.last + 1, end)
-                if (t.isBlank()) null else LyricWord(toMs(m), t)
-            }
-            val clean = body.replace(wordTag, "").trim()
-            for (t in tags) out += LyricLine(toMs(t), clean, words)
-        }
-        out.sortBy { it.timeMs }
-        return out
-    }
-
-    fun plain(text: String): List<LyricLine> =
-        text.lines().map { it.trim() }.filter { it.isNotEmpty() }.map { LyricLine(-1, it, null) }
+    return LyricLine(start, nextStart, text, words)
 }
 
-/** Lyrics order: disk cache -> LRCLIB lookup (once, then cached). */
-class LyricsRepository(context: Context) {
-    private val dir = File(context.filesDir, "lyrics").apply { mkdirs() }
+private fun wordProgress(word: LyricWord, pos: Long): Float {
+    val d = (word.endMs - word.startMs).coerceAtLeast(1).toFloat()
+    val t = ((pos - word.startMs + 0.25f * d) / (d * 1.5f)).coerceIn(0f, 1f)
+    return t * t * (3f - 2f * t)
+}
 
-    suspend fun get(song: Song): List<LyricLine>? = withContext(Dispatchers.IO) {
-        val lrc = File(dir, "${song.id}.lrc")
-        val txt = File(dir, "${song.id}.txt")
-        val none = File(dir, "${song.id}.none")
-
-        if (lrc.exists()) return@withContext LrcParser.parse(lrc.readText())
-        if (txt.exists()) return@withContext LrcParser.plain(txt.readText())
-        if (none.exists()) return@withContext null
-
-        try {
-            val body = fetch(song)
-            if (body == null) {
-                none.createNewFile()
-                return@withContext null
-            }
-            val obj = JSONObject(body)
-            val synced = obj.optString("syncedLyrics").takeIf { it.isNotBlank() && it != "null" }
-            val plain = obj.optString("plainLyrics").takeIf { it.isNotBlank() && it != "null" }
-            when {
-                synced != null -> {
-                    lrc.writeText(synced)
-                    LrcParser.parse(synced)
-                }
-                plain != null -> {
-                    txt.writeText(plain)
-                    LrcParser.plain(plain)
-                }
-                else -> {
-                    none.createNewFile()
-                    null
-                }
-            }
-        } catch (_: Exception) {
-            null // offline: try again next time
+@Composable
+fun LyricsView(
+    modifier: Modifier,
+    lines: List<LyricLine>,
+    plain: String?,
+    pos: LongState,
+    onSeek: (Long) -> Unit,
+) {
+    when {
+        lines.isNotEmpty() -> SyncedLyrics(modifier, lines, pos, onSeek)
+        !plain.isNullOrBlank() -> Column(
+            modifier.verticalScroll(rememberScrollState()).padding(vertical = 24.dp)
+        ) {
+            Text(
+                plain,
+                fontSize = 22.sp,
+                lineHeight = 32.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = Color.White.copy(alpha = 0.85f),
+            )
+        }
+        else -> Box(modifier, contentAlignment = Alignment.Center) {
+            Text("No lyrics found", color = Color.White.copy(alpha = 0.6f))
         }
     }
+}
 
-    private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
+@Composable
+private fun SyncedLyrics(
+    modifier: Modifier,
+    lines: List<LyricLine>,
+    pos: LongState,
+    onSeek: (Long) -> Unit,
+) {
+    val listState = rememberLazyListState()
+    val activeIndex by remember(lines) {
+        derivedStateOf {
+            var idx = -1
+            val p = pos.longValue
+            for (i in lines.indices) {
+                if (lines[i].startMs <= p) idx = i else break
+            }
+            idx
+        }
+    }
+    LaunchedEffect(activeIndex) {
+        if (activeIndex >= 0) {
+            val h = listState.layoutInfo.viewportSize.height
+            listState.animateScrollToItem(activeIndex, -(h / 3))
+        }
+    }
+    LazyColumn(
+        modifier = modifier.fillMaxWidth(),
+        state = listState,
+        contentPadding = PaddingValues(top = 120.dp, bottom = 240.dp),
+    ) {
+        itemsIndexed(lines, key = { i, l -> "$i-${l.startMs}" }) { index, line ->
+            SyncedLine(
+                line = line,
+                relation = index.compareTo(activeIndex),
+                pos = pos,
+                onClick = { onSeek(line.startMs) },
+            )
+        }
+    }
+}
 
-    private fun fetch(song: Song): String? {
-        val seconds = song.durationMs / 1000
-        val exact = Http.get(
-            "https://lrclib.net/api/get?artist_name=${enc(song.artist)}&track_name=${enc(song.title)}" +
-                "&album_name=${enc(song.album)}&duration=$seconds"
-        )
-        if (exact != null) return exact.toString(Charsets.UTF_8)
-
-        val search = Http.get(
-            "https://lrclib.net/api/search?track_name=${enc(song.title)}&artist_name=${enc(song.artist)}"
-        ) ?: return null
-        val arr = JSONArray(search.toString(Charsets.UTF_8))
-        var best: JSONObject? = null
-        for (i in 0 until arr.length()) {
-            val o = arr.getJSONObject(i)
-            val synced = o.optString("syncedLyrics")
-            if (synced.isNotBlank() && synced != "null") {
-                if (abs(o.optDouble("duration", 0.0) - song.durationMs / 1000.0) <= 3.0) {
-                    best = o
-                    break
+/** relation: <0 already sung, 0 active, >0 upcoming */
+@Composable
+private fun SyncedLine(line: LyricLine, relation: Int, pos: LongState, onClick: () -> Unit) {
+    val active = relation == 0
+    val scale by animateFloatAsState(if (active) 1f else 0.92f, tween(400), label = "lineScale")
+    val baseAlpha by animateFloatAsState(
+        when {
+            active -> 1f
+            relation < 0 -> 0.45f
+            else -> 0.32f
+        },
+        tween(400),
+        label = "lineAlpha",
+    )
+    val text: AnnotatedString = if (active) {
+        val p = pos.longValue
+        buildAnnotatedString {
+            line.words.forEachIndexed { i, w ->
+                val progress = wordProgress(w, p)
+                withStyle(SpanStyle(color = Color.White.copy(alpha = 0.38f + 0.62f * progress))) {
+                    append(w.text)
                 }
-                if (best == null) best = o
+                if (i < line.words.lastIndex) append(" ")
             }
         }
-        return (best ?: arr.optJSONObject(0))?.toString()
+    } else {
+        AnnotatedString(line.text)
     }
+    Text(
+        text = text,
+        fontSize = 30.sp,
+        lineHeight = 38.sp,
+        fontWeight = FontWeight.Bold,
+        color = Color.White.copy(alpha = baseAlpha),
+        modifier = Modifier
+            .fillMaxWidth()
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+                transformOrigin = TransformOrigin(0f, 0.5f)
+            }
+            .clickable(onClick = onClick)
+            .padding(vertical = 10.dp),
+    )
 }

@@ -12,8 +12,6 @@ import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
@@ -28,14 +26,9 @@ data class PlayerState(
 
 class PlayerViewModel(private val app: Application) : AndroidViewModel(app) {
     private val repo = LibraryRepository(app.contentResolver)
-    private val cache = MetadataCache(app)
-    private val meta = MetadataRepository(cache)
+    private val meta = MetadataRepository(MetadataCache(app))
     private val store = PlaylistStore(app)
 
-    /** Songs exactly as derived from file names (embedded tags are never used). */
-    private val raw = MutableStateFlow<List<Song>>(emptyList())
-
-    /** What the UI shows: [raw] with looked-up title/artist/album laid over it as they arrive. */
     val songs = MutableStateFlow<List<Song>>(emptyList())
     val loaded = MutableStateFlow(false)
     val scanning = MutableStateFlow(false)
@@ -47,7 +40,6 @@ class PlayerViewModel(private val app: Application) : AndroidViewModel(app) {
     private var controller: MediaController? = null
     private var connecting = false
     private val pending = mutableListOf<(MediaController) -> Unit>()
-    private var enrichJob: Job? = null
 
     init { load() }
 
@@ -94,58 +86,11 @@ class PlayerViewModel(private val app: Application) : AndroidViewModel(app) {
 
     // ---- library ----
 
-    private fun overlay(s: Song): Song {
-        val m = cache.get(s.id)
-        val title = m?.title?.takeIf { it.isNotBlank() } ?: s.title
-        val artist = m?.artist?.takeIf { it.isNotBlank() } ?: s.artist
-        val album = m?.album?.takeIf { it.isNotBlank() } ?: "Unknown album"
-        return s.copy(
-            title = title,
-            artist = artist,
-            album = album,
-            albumId = album.lowercase().hashCode().toLong(),
-        )
-    }
-
-    private fun rebuild() {
-        songs.value = raw.value.map(::overlay).sortedBy { it.title.lowercase() }
-    }
-
     fun load() {
         viewModelScope.launch(Dispatchers.IO) {
             if (songs.value.isEmpty()) loaded.value = false
-            raw.value = repo.songs()
-            rebuild()
+            songs.value = repo.songs()
             loaded.value = true
-            startEnrichment()
-        }
-    }
-
-    /**
-     * Background pass: looks every not-yet-known song up from its file name, gently (iTunes
-     * limits requests), and refreshes the lists as results arrive. Safe to restart; finished
-     * songs are cached and skipped.
-     */
-    private fun startEnrichment() {
-        enrichJob?.cancel()
-        enrichJob = viewModelScope.launch(Dispatchers.IO) {
-            var done = 0
-            var failures = 0
-            for (s in raw.value) {
-                if (cache.get(s.id) != null) continue
-                meta.enrich(s, withLyrics = false)
-                if (cache.get(s.id) == null) {
-                    // Offline or blocked: give up for now, the next launch tries again.
-                    failures++
-                    if (failures >= 5) break
-                } else {
-                    failures = 0
-                    done++
-                    if (done % 5 == 0) rebuild()
-                }
-                delay(3_200)
-            }
-            if (done > 0) rebuild()
         }
     }
 
@@ -226,7 +171,6 @@ class PlayerViewModel(private val app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val m = meta.enrich(s)
             if (state.value.current?.id == s.id) _state.value = state.value.copy(metadata = m)
-            rebuild() // the lists pick up the corrected title/artist/album right away
         }
     }
 

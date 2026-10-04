@@ -20,41 +20,24 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.net.URL
-import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Artwork lookup order (file-name based metadata beats the file's own embedded art, which may be wrong):
- * 1. artwork downloaded earlier from the metadata lookup (saved on disk)
- * 2. the remote artwork URL, downloaded once and saved to disk
- * 3. embedded / MediaStore thumbnail from the file itself (offline fallback)
+ * Artwork lookup order:
+ * 1. embedded / MediaStore thumbnail from the file itself (offline)
+ * 2. previously downloaded artwork saved on disk
+ * 3. remote artwork URL (iTunes), downloaded once and saved to disk
  */
 object ArtworkLoader {
     private val memory = LruCache<String, ImageBitmap>(64)
 
-    /** Song ids whose cached bitmap came from the metadata lookup (not the embedded fallback). */
-    private val authoritative: MutableSet<String> = ConcurrentHashMap.newKeySet()
-
     suspend fun load(context: Context, song: Song, remoteUrl: String?): ImageBitmap? =
         withContext(Dispatchers.IO) {
             val key = song.id.toString()
-            val cached = memory.get(key)
-            if (cached != null && (remoteUrl == null || key in authoritative)) return@withContext cached
-
-            fromDisk(context, key)?.let { bmp ->
-                return@withContext bmp.asImageBitmap().also {
-                    memory.put(key, it)
-                    authoritative += key
-                }
-            }
-            if (remoteUrl != null) {
-                fromRemote(context, key, remoteUrl)?.let { bmp ->
-                    return@withContext bmp.asImageBitmap().also {
-                        memory.put(key, it)
-                        authoritative += key
-                    }
-                }
-            }
-            cached ?: fromLocal(context, song)?.asImageBitmap()?.also { memory.put(key, it) }
+            memory.get(key)?.let { return@withContext it }
+            val bitmap = fromLocal(context, song)
+                ?: fromDisk(context, key)
+                ?: fromRemote(context, key, remoteUrl)
+            bitmap?.asImageBitmap()?.also { memory.put(key, it) }
         }
 
     private fun dir(context: Context): File =
