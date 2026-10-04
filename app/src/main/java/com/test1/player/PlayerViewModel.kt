@@ -12,6 +12,8 @@ import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
@@ -34,12 +36,18 @@ class PlayerViewModel(private val app: Application) : AndroidViewModel(app) {
     val scanning = MutableStateFlow(false)
     val playlists = MutableStateFlow(store.load())
 
+    /** File-name lookup results (title / artist / artwork) per song id, filled in the background. */
+    val found = MutableStateFlow<Map<Long, CachedMetadata>>(emptyMap())
+
     private val _state = MutableStateFlow(PlayerState())
     val state = _state.asStateFlow()
 
     private var controller: MediaController? = null
     private var connecting = false
     private val pending = mutableListOf<(MediaController) -> Unit>()
+
+    private var lookupJob: Job? = null
+    private val attempted = mutableSetOf<Long>()
 
     init { load() }
 
@@ -89,8 +97,37 @@ class PlayerViewModel(private val app: Application) : AndroidViewModel(app) {
     fun load() {
         viewModelScope.launch(Dispatchers.IO) {
             if (songs.value.isEmpty()) loaded.value = false
-            songs.value = repo.songs()
+            val list = repo.songs()
+            songs.value = list
             loaded.value = true
+            startLookups(list)
+        }
+    }
+
+    /**
+     * Looks every song up by its file name in the background so lists show the real title,
+     * artist and artwork without having to play each song first. Saved results load instantly;
+     * new lookups are throttled to stay within iTunes' rate limit.
+     */
+    private fun startLookups(list: List<Song>) {
+        lookupJob?.cancel()
+        lookupJob = viewModelScope.launch(Dispatchers.IO) {
+            val known = HashMap(found.value)
+            val todo = mutableListOf<Song>()
+            for (s in list) {
+                if (s.id in known) continue
+                val c = meta.cached(s)
+                if (c != null) known[s.id] = c else todo += s
+            }
+            found.value = known
+
+            for (s in todo) {
+                if (s.id in attempted) continue
+                val m = meta.lookup(s)
+                attempted += s.id
+                if (m != null) found.value = found.value + (s.id to m)
+                delay(2500)
+            }
         }
     }
 
@@ -171,6 +208,8 @@ class PlayerViewModel(private val app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val m = meta.enrich(s)
             if (state.value.current?.id == s.id) _state.value = state.value.copy(metadata = m)
+            // A real match (it has artwork) also feeds the lists.
+            if (m.artworkUrl != null) found.value = found.value + (s.id to m)
         }
     }
 
