@@ -18,11 +18,16 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.rounded.Pause
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.SkipNext
+import androidx.compose.material.icons.rounded.SkipPrevious
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
@@ -46,7 +51,6 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -166,6 +170,7 @@ private fun PlayerPage(modifier: Modifier, st: PlayerState, song: Song, art: Ima
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center,
+            color = Color.White,
         )
         Text(
             st.metadata?.artist ?: song.artist,
@@ -199,6 +204,7 @@ private fun LyricsPage(
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
+                    color = Color.White,
                 )
                 Text(
                     st.metadata?.artist ?: song.artist,
@@ -263,25 +269,25 @@ private fun Controls(backdrop: LayerBackdrop, playing: Boolean, vm: PlayerViewMo
     ) {
         GlassButton(backdrop, 60.dp, vm::previous) {
             Icon(
-                painterResource(android.R.drawable.ic_media_previous),
+                Icons.Rounded.SkipPrevious,
                 contentDescription = "Previous",
-                modifier = Modifier.align(Alignment.Center),
+                modifier = Modifier.align(Alignment.Center).size(34.dp),
                 tint = Color.White,
             )
         }
         GlassButton(backdrop, 84.dp, vm::toggle) {
             Icon(
-                painterResource(if (playing) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play),
+                if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
                 contentDescription = if (playing) "Pause" else "Play",
-                modifier = Modifier.align(Alignment.Center),
+                modifier = Modifier.align(Alignment.Center).size(48.dp),
                 tint = Color.White,
             )
         }
         GlassButton(backdrop, 60.dp, vm::next) {
             Icon(
-                painterResource(android.R.drawable.ic_media_next),
+                Icons.Rounded.SkipNext,
                 contentDescription = "Next",
-                modifier = Modifier.align(Alignment.Center),
+                modifier = Modifier.align(Alignment.Center).size(34.dp),
                 tint = Color.White,
             )
         }
