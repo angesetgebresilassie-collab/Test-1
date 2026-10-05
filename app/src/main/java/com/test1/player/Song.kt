@@ -27,6 +27,8 @@ fun Song.toMediaItem(): MediaItem = MediaItem.Builder()
             .setTitle(title)
             .setArtist(artist)
             .setAlbumTitle(album)
+            // Shown by the notification and lock screen.
+            .setArtworkUri(artworkUrl?.let { Uri.parse(it) })
             .build()
     )
     .build()
