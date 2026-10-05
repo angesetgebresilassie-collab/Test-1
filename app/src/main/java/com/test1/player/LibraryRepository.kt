@@ -2,6 +2,7 @@ package com.test1.player
 
 import android.content.ContentResolver
 import android.content.ContentUris
+import android.os.Build
 import android.provider.MediaStore
 import android.provider.MediaStore.Audio.Media
 
@@ -12,8 +13,8 @@ class LibraryRepository(private val resolver: ContentResolver) {
      * Title and artist come from the FILE NAME (embedded tags are often wrong or misleading);
      * a background metadata lookup later refines them.
      * No IS_MUSIC filter: downloads, messenger audio and many m4a files are not flagged as
-     * music even though they are songs. Ringtones/alarms/notifications and clips under
-     * 15 seconds are skipped instead.
+     * music even though they are songs. Ringtones/alarms/notifications, sound/voice/call
+     * recordings and clips under 15 seconds are skipped instead.
      */
     fun songs(): List<Song> {
         val out = mutableListOf<Song>()
@@ -27,8 +28,21 @@ class LibraryRepository(private val resolver: ContentResolver) {
             Media.TRACK,
             Media.DURATION,
         )
-        val selection = "${Media.IS_RINGTONE} = 0 AND ${Media.IS_NOTIFICATION} = 0 AND " +
-            "${Media.IS_ALARM} = 0 AND ${Media.DURATION} >= 15000"
+        val clauses = mutableListOf(
+            "${Media.IS_RINGTONE} = 0",
+            "${Media.IS_NOTIFICATION} = 0",
+            "${Media.IS_ALARM} = 0",
+            "${Media.DURATION} >= 15000",
+        )
+        // Android 12+ flags recordings made by the system recorder. The column doesn't exist
+        // on older versions (querying it would fail), so only add it where it's available.
+        if (Build.VERSION.SDK_INT >= 31) clauses += "${Media.IS_RECORDING} = 0"
+        // Recorder apps (Google Recorder, Samsung Voice Recorder, call recorders) that don't set
+        // the flag still save into well-known folders, so hide those folders too.
+        val recordingFolders = listOf("%Recordings/%", "%Voice Recorder/%", "%Sound Recorder/%", "%Call/%", "%Call recordings/%")
+        clauses += "(${Media.RELATIVE_PATH} IS NULL OR (" +
+            recordingFolders.joinToString(" AND ") { "${Media.RELATIVE_PATH} NOT LIKE '$it'" } + "))"
+        val selection = clauses.joinToString(" AND ")
         runCatching {
             resolver.query(collection, projection, selection, null, "${Media.DISPLAY_NAME} COLLATE NOCASE ASC")?.use { c ->
                 val id = c.getColumnIndexOrThrow(Media._ID)
@@ -50,7 +64,7 @@ class LibraryRepository(private val resolver: ContentResolver) {
                         albumId = c.getLong(albumId),
                         track = c.getInt(track),
                         durationMs = c.getLong(duration),
-                        uri = ContentUris.withAppendedId(collection, songId),
+                        uri = ContentUris.withAppendId(collection, songId),
                         fileName = fileName,
                     )
                 }
