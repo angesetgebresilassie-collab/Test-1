@@ -210,7 +210,29 @@ class PlayerViewModel(private val app: Application) : AndroidViewModel(app) {
             if (state.value.current?.id == s.id) _state.value = state.value.copy(metadata = m)
             // A real match (it has artwork) also feeds the lists.
             if (m.artworkUrl != null) found.value = found.value + (s.id to m)
+            updateNotificationItem(s, m)
         }
+    }
+
+    /**
+     * Gives the notification / lock screen the looked-up title, artist and artwork for the song
+     * that is playing. Only the metadata changes, so playback is not interrupted.
+     */
+    private fun updateNotificationItem(s: Song, m: CachedMetadata) {
+        val mc = controller ?: return
+        val i = mc.currentMediaItemIndex
+        if (i < 0 || i >= mc.mediaItemCount) return
+        val old = mc.getMediaItemAt(i)
+        if (old.mediaId != s.id.toString()) return
+        if (m.artworkUrl == null || old.mediaMetadata.artworkUri?.toString() == m.artworkUrl) return
+        mc.replaceMediaItem(
+            i,
+            s.copy(
+                title = m.title.ifBlank { s.title },
+                artist = m.artist.ifBlank { s.artist },
+                artworkUrl = m.artworkUrl,
+            ).toMediaItem(),
+        )
     }
 
     // ---- playlists ----
