@@ -64,7 +64,7 @@ class LibraryRepository(private val resolver: ContentResolver) {
                         albumId = c.getLong(albumId),
                         track = c.getInt(track),
                         durationMs = c.getLong(duration),
-                        uri = ContentUris.withAppendId(collection, songId),
+                        uri = ContentUris.withAppendedId(collection, songId),
                         fileName = fileName,
                     )
                 }
