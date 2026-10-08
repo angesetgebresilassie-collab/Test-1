@@ -25,46 +25,102 @@ import java.net.URL
  * Artwork lookup order:
  * 1. artwork found by the file-name lookup (downloaded once, saved on disk per URL)
  * 2. embedded / MediaStore thumbnail from the file itself (offline fallback)
+ *
+ * Bitmaps are decoded at the size the caller needs (`maxPx`, 0 = original) and the memory cache
+ * is limited by bytes, so list rows no longer hold full-size covers.
  */
 object ArtworkLoader {
-    private val memory = LruCache<String, ImageBitmap>(64)
+    private val memory = object : LruCache<String, ImageBitmap>(
+        (Runtime.getRuntime().maxMemory() / 8L).coerceIn(8L * 1024 * 1024, Int.MAX_VALUE.toLong()).toInt()
+    ) {
+        override fun sizeOf(key: String, value: ImageBitmap): Int =
+            runCatching { value.asAndroidBitmap().byteCount }.getOrDefault(1_000_000)
+    }
 
-    suspend fun load(context: Context, song: Song, remoteUrl: String?): ImageBitmap? =
+    private fun diskKey(song: Song, remoteUrl: String?): String =
+        song.id.toString() + (remoteUrl?.takeIf { it.isNotBlank() }?.let { "-" + it.hashCode() } ?: "")
+
+    private fun memKey(song: Song, remoteUrl: String?, maxPx: Int): String =
+        diskKey(song, remoteUrl) + "@" + maxPx
+
+    /** Already-decoded artwork, read synchronously (no flicker when a row scrolls back in). */
+    fun peek(song: Song, remoteUrl: String?, maxPx: Int): ImageBitmap? =
+        memory.get(memKey(song, remoteUrl, maxPx))
+
+    suspend fun load(context: Context, song: Song, remoteUrl: String?, maxPx: Int = 0): ImageBitmap? =
         withContext(Dispatchers.IO) {
-            val key = song.id.toString() + (remoteUrl?.takeIf { it.isNotBlank() }?.let { "-" + it.hashCode() } ?: "")
-            memory.get(key)?.let { return@withContext it }
-            val bitmap = fromDisk(context, key)
-                ?: fromRemote(context, key, remoteUrl)
-                ?: fromLocal(context, song)
-            bitmap?.asImageBitmap()?.also { memory.put(key, it) }
+            val mKey = memKey(song, remoteUrl, maxPx)
+            memory.get(mKey)?.let { return@withContext it }
+            val key = diskKey(song, remoteUrl)
+            val bitmap = fromDisk(context, key, maxPx)
+                ?: fromRemote(context, key, remoteUrl, maxPx)
+                ?: fromLocal(context, song, maxPx)
+            bitmap?.asImageBitmap()?.also { memory.put(mKey, it) }
         }
 
     private fun dir(context: Context): File =
         File(context.filesDir, "artwork").apply { mkdirs() }
 
-    private fun fromLocal(context: Context, song: Song): Bitmap? = runCatching {
-        context.contentResolver.loadThumbnail(song.uri, Size(600, 600), null)
+    private fun fromLocal(context: Context, song: Song, maxPx: Int): Bitmap? = runCatching {
+        val side = if (maxPx > 0) maxPx else 600
+        context.contentResolver.loadThumbnail(song.uri, Size(side, side), null)
     }.getOrNull()
 
-    private fun fromDisk(context: Context, key: String): Bitmap? =
-        File(dir(context), "$key.jpg").takeIf { it.exists() }?.let { BitmapFactory.decodeFile(it.path) }
+    private fun fromDisk(context: Context, key: String, maxPx: Int): Bitmap? =
+        File(dir(context), "$key.jpg").takeIf { it.exists() }?.let { decodeFile(it.path, maxPx) }
 
-    private fun fromRemote(context: Context, key: String, url: String?): Bitmap? {
+    private fun fromRemote(context: Context, key: String, url: String?, maxPx: Int): Bitmap? {
         if (url.isNullOrBlank()) return null
         return runCatching {
             val bytes = URL(url).openStream().use { it.readBytes() }
             File(dir(context), "$key.jpg").writeBytes(bytes)
-            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            decodeBytes(bytes, maxPx)
         }.getOrNull()
+    }
+
+    /** Largest power-of-two shrink that still leaves the longest side >= [maxPx]. */
+    private fun sampleSize(width: Int, height: Int, maxPx: Int): Int {
+        if (maxPx <= 0) return 1
+        val longest = maxOf(width, height)
+        var sample = 1
+        while (longest / (sample * 2) >= maxPx) sample *= 2
+        return sample
+    }
+
+    private fun decodeFile(path: String, maxPx: Int): Bitmap? {
+        if (maxPx <= 0) return BitmapFactory.decodeFile(path)
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(path, bounds)
+        val options = BitmapFactory.Options().apply {
+            inSampleSize = sampleSize(bounds.outWidth, bounds.outHeight, maxPx)
+        }
+        return BitmapFactory.decodeFile(path, options)
+    }
+
+    private fun decodeBytes(bytes: ByteArray, maxPx: Int): Bitmap? {
+        if (maxPx <= 0) return BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        val options = BitmapFactory.Options().apply {
+            inSampleSize = sampleSize(bounds.outWidth, bounds.outHeight, maxPx)
+        }
+        return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
     }
 }
 
+/** [maxPx]: longest side the artwork is shown at, in pixels (0 = full size). */
 @Composable
-fun rememberArtwork(song: Song?, remoteUrl: String?): ImageBitmap? {
+fun rememberArtwork(song: Song?, remoteUrl: String?, maxPx: Int = 0): ImageBitmap? {
     val context = LocalContext.current.applicationContext
-    var bitmap by remember(song?.id, remoteUrl) { mutableStateOf<ImageBitmap?>(null) }
-    LaunchedEffect(song?.id, remoteUrl) {
-        bitmap = if (song == null) null else ArtworkLoader.load(context, song, remoteUrl)
+    var bitmap by remember(song?.id, remoteUrl, maxPx) {
+        mutableStateOf(if (song == null) null else ArtworkLoader.peek(song, remoteUrl, maxPx))
+    }
+    LaunchedEffect(song?.id, remoteUrl, maxPx) {
+        if (song == null) {
+            bitmap = null
+        } else if (bitmap == null) {
+            bitmap = ArtworkLoader.load(context, song, remoteUrl, maxPx)
+        }
     }
     return bitmap
 }
