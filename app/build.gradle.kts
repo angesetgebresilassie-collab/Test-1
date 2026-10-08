@@ -62,5 +62,7 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:1.8.0")
     implementation("androidx.media3:media3-session:1.8.0")
     implementation("io.github.kyant0:backdrop:1.0.6")
+    // Blur behind the floating nav bar (same version Nuvio uses).
+    implementation("dev.chrisbanes.haze:haze:1.7.2")
 
 }
