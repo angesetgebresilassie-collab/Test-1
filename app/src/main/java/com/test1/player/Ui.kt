@@ -15,7 +15,6 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -26,7 +25,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
@@ -57,9 +55,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -68,11 +66,13 @@ import androidx.compose.ui.unit.*
 import com.kyant.backdrop.backdrops.LayerBackdrop
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
-import kotlin.math.roundToInt
+import dev.chrisbanes.haze.HazeState
+import dev.chrisbanes.haze.hazeSource
+import dev.chrisbanes.haze.rememberHazeState
 
 private val BaseDark = Color(0xFF040406)
 
-// Dark frosted glass used by the bottom bar, search button and mini player.
+// Dark frosted glass used by the mini player.
 private val BarTint = Color(0xFF2B2B30).copy(alpha = 0.42f)
 private val BarBlur = 28.dp
 
@@ -136,6 +136,9 @@ fun Home(vm: PlayerViewModel, granted: Boolean, onGrant: () -> Unit, onOpenSetti
     }
 
     val backdrop = rememberLayerBackdrop()
+    // Blur source for the floating nav bar, and its scroll-aware label state.
+    val hazeState = rememberHazeState()
+    val navScroll = rememberNuvioNavBarScrollState()
     val art = rememberArtwork(st.current, st.metadata?.artworkUrl)
     val accent = remember(art) { art?.accentColor() }
     // The whole UI follows the colour of the track that is playing (blue when nothing is).
@@ -222,132 +225,144 @@ fun Home(vm: PlayerViewModel, granted: Boolean, onGrant: () -> Unit, onOpenSetti
                         alpha = 1f - 0.2f * depth
                     }
             ) {
-                // Everything the glass refracts lives in this layer.
-                Box(Modifier.layerBackdrop(backdrop).fillMaxSize()) {
-                    LiquidBackground(accent, art)
-                }
-
-                // Main content (kept composed but hidden while a detail page is open, so scroll positions survive).
-                Column(
+                // Everything the floating nav bar blurs (background, lists, detail page) lives in
+                // this box; it also feeds the bar's scroll-aware labels.
+                Box(
                     Modifier
                         .fillMaxSize()
-                        .statusBarsPadding()
-                        .graphicsLayer { alpha = if (detail != null) 0f else 1f }
+                        .hazeSource(hazeState)
+                        .nestedScroll(navScroll.nestedScrollConnection)
                 ) {
-                    Header(
-                        title = tab.label,
-                        backdrop = backdrop,
-                        searching = searching,
-                        query = query,
-                        onQuery = { query = it },
-                        onRefresh = vm::rescan,
-                    )
-                    Box(Modifier.weight(1f).fillMaxWidth()) {
-                        when {
-                            !granted -> MessageCard(
-                                backdrop,
-                                "Allow access to your music",
-                                "The player needs permission to read audio files on this device. Nothing leaves your phone.",
-                            ) {
-                                GlassPill(backdrop, "Allow access", onGrant, Modifier.fillMaxWidth(), style = LiquidStyle.Tinted)
-                                GlassPill(backdrop, "Open app settings", onOpenSettings, Modifier.fillMaxWidth())
-                            }
-                            !loaded || (scanning && songs.isEmpty()) -> MessageCard(
-                                backdrop,
-                                "Looking for your music…",
-                                "Reading your device's media library.",
-                            ) {
-                                CircularProgressIndicator(color = Color.White)
-                            }
-                            songs.isEmpty() -> MessageCard(
-                                backdrop,
-                                "No music found",
-                                "Nothing playable showed up in the media library. If you just copied songs onto the phone, tap rescan so Android indexes them.",
-                            ) {
-                                GlassPill(
+                    // Everything the glass refracts lives in this layer.
+                    Box(Modifier.layerBackdrop(backdrop).fillMaxSize()) {
+                        LiquidBackground(accent, art)
+                    }
+
+                    // Main content (kept composed but hidden while a detail page is open, so scroll positions survive).
+                    Column(
+                        Modifier
+                            .fillMaxSize()
+                            .statusBarsPadding()
+                            .graphicsLayer { alpha = if (detail != null) 0f else 1f }
+                    ) {
+                        Header(
+                            title = tab.label,
+                            backdrop = backdrop,
+                            searching = searching,
+                            query = query,
+                            onQuery = { query = it },
+                            onRefresh = vm::rescan,
+                        )
+                        Box(Modifier.weight(1f).fillMaxWidth()) {
+                            when {
+                                !granted -> MessageCard(
                                     backdrop,
-                                    "Rescan storage",
-                                    { vm.rescan() },
-                                    Modifier.fillMaxWidth(),
-                                    Icons.Filled.Refresh,
-                                    style = LiquidStyle.Tinted,
-                                )
-                            }
-                            else -> Crossfade(targetState = tab, label = "tab") { t ->
-                                when (t) {
-                                    HomeTab.Songs -> SongList(
-                                        songs = shownSongs,
-                                        grouped = q.isEmpty(),
-                                        backdrop = backdrop,
-                                        st = st,
-                                        bottomPad = bottomPad,
-                                        onPlay = { vm.play(it, shownSongs) },
-                                        onPlayAll = { vm.playAll(shownSongs) },
-                                        onShuffle = { vm.shuffleAll(shownSongs) },
-                                        onMenu = { dialog = Dlg.SongMenu(it, null) },
+                                    "Allow access to your music",
+                                    "The player needs permission to read audio files on this device. Nothing leaves your phone.",
+                                ) {
+                                    GlassPill(backdrop, "Allow access", onGrant, Modifier.fillMaxWidth(), style = LiquidStyle.Tinted)
+                                    GlassPill(backdrop, "Open app settings", onOpenSettings, Modifier.fillMaxWidth())
+                                }
+                                !loaded || (scanning && songs.isEmpty()) -> MessageCard(
+                                    backdrop,
+                                    "Looking for your music…",
+                                    "Reading your device's media library.",
+                                ) {
+                                    CircularProgressIndicator(color = Color.White)
+                                }
+                                songs.isEmpty() -> MessageCard(
+                                    backdrop,
+                                    "No music found",
+                                    "Nothing playable showed up in the media library. If you just copied songs onto the phone, tap rescan so Android indexes them.",
+                                ) {
+                                    GlassPill(
+                                        backdrop,
+                                        "Rescan storage",
+                                        { vm.rescan() },
+                                        Modifier.fillMaxWidth(),
+                                        Icons.Filled.Refresh,
+                                        style = LiquidStyle.Tinted,
                                     )
-                                    HomeTab.Albums -> AlbumGrid(shownAlbums, bottomPad) { detail = Detail.AlbumD(it.id) }
-                                    HomeTab.Artists -> ArtistList(shownArtists, bottomPad) { detail = Detail.ArtistD(it.name) }
-                                    HomeTab.Playlists -> PlaylistList(
-                                        playlists = shownPlaylists,
-                                        songById = songById,
-                                        bottomPad = bottomPad,
-                                        onNew = { dialog = Dlg.NewPlaylist(emptyList()) },
-                                        onOpen = { detail = Detail.PlaylistD(it.id) },
-                                    )
+                                }
+                                else -> Crossfade(targetState = tab, label = "tab") { t ->
+                                    when (t) {
+                                        HomeTab.Songs -> SongList(
+                                            songs = shownSongs,
+                                            grouped = q.isEmpty(),
+                                            backdrop = backdrop,
+                                            st = st,
+                                            bottomPad = bottomPad,
+                                            onPlay = { vm.play(it, shownSongs) },
+                                            onPlayAll = { vm.playAll(shownSongs) },
+                                            onShuffle = { vm.shuffleAll(shownSongs) },
+                                            onMenu = { dialog = Dlg.SongMenu(it, null) },
+                                        )
+                                        HomeTab.Albums -> AlbumGrid(shownAlbums, bottomPad) { detail = Detail.AlbumD(it.id) }
+                                        HomeTab.Artists -> ArtistList(shownArtists, bottomPad) { detail = Detail.ArtistD(it.name) }
+                                        HomeTab.Playlists -> PlaylistList(
+                                            playlists = shownPlaylists,
+                                            songById = songById,
+                                            bottomPad = bottomPad,
+                                            onNew = { dialog = Dlg.NewPlaylist(emptyList()) },
+                                            onOpen = { detail = Detail.PlaylistD(it.id) },
+                                        )
+                                    }
                                 }
                             }
                         }
                     }
-                }
 
-                // Album / artist / playlist page.
-                AnimatedVisibility(
-                    visible = detail != null,
-                    enter = fadeIn(tween(250)) + slideInVertically(tween(350)) { it / 8 },
-                    exit = fadeOut(tween(200)),
-                ) {
-                    val data = lastDetail.value?.let { resolve(it) }
-                    if (data != null) {
-                        DetailScreen(
-                            data = data,
-                            st = st,
-                            bottomPad = bottomPad,
-                            onBack = { detail = null },
-                            onPlay = { vm.play(it, data.songs) },
-                            onPlayAll = { vm.playAll(data.songs) },
-                            onShuffle = { vm.shuffleAll(data.songs) },
-                            onAddAll = { dialog = Dlg.Pick(data.songs) },
-                            onMenu = { dialog = Dlg.SongMenu(it, data.playlistId) },
-                            onDelete = data.playlistId?.let { id ->
-                                {
-                                    vm.deletePlaylist(id)
-                                    detail = null
-                                }
-                            },
-                        )
+                    // Album / artist / playlist page.
+                    AnimatedVisibility(
+                        visible = detail != null,
+                        enter = fadeIn(tween(250)) + slideInVertically(tween(350)) { it / 8 },
+                        exit = fadeOut(tween(200)),
+                    ) {
+                        val data = lastDetail.value?.let { resolve(it) }
+                        if (data != null) {
+                            DetailScreen(
+                                data = data,
+                                st = st,
+                                bottomPad = bottomPad,
+                                onBack = { detail = null },
+                                onPlay = { vm.play(it, data.songs) },
+                                onPlayAll = { vm.playAll(data.songs) },
+                                onShuffle = { vm.shuffleAll(data.songs) },
+                                onAddAll = { dialog = Dlg.Pick(data.songs) },
+                                onMenu = { dialog = Dlg.SongMenu(it, data.playlistId) },
+                                onDelete = data.playlistId?.let { id ->
+                                    {
+                                        vm.deletePlaylist(id)
+                                        detail = null
+                                    }
+                                },
+                            )
+                        }
                     }
                 }
 
-                // Floating mini player, then the tab bar + search button.
+                // Floating mini player, then the Nuvio floating nav bar.
                 Column(
                     Modifier
                         .align(Alignment.BottomCenter)
                         .navigationBarsPadding()
-                        .padding(horizontal = 16.dp)
                         .padding(bottom = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     st.current?.let { song ->
-                        MiniPlayer(song, st, backdrop, vm) { nowPlayingOpen = true }
+                        Box(Modifier.padding(horizontal = 16.dp)) {
+                            MiniPlayer(song, st, backdrop, vm) { nowPlayingOpen = true }
+                        }
                     }
                     BottomBar(
                         selected = tab,
                         searching = searching,
-                        backdrop = backdrop,
+                        hazeState = hazeState,
+                        scrollState = navScroll,
                         onTab = {
                             tab = it
                             detail = null
+                            if (searching) toggleSearch()
                         },
                         onSearch = {
                             detail = null
@@ -454,146 +469,37 @@ private fun SearchField(backdrop: LayerBackdrop, query: String, onQuery: (String
 }
 
 /**
- * Liquid glass tab bar: a heavily blurred, dark frosted pill with a lighter glass "lens" under
- * the selected tab that slides between tabs with a spring and swells while you drag it.
- * The selected tab takes the accent colour of the playing track.
+ * Nuvio's floating jelly nav bar (see JellyNavBar.kt): a blurred pill with a spring-driven
+ * selection lens, drag-to-select and labels that collapse while scrolling. The selected tab
+ * and glow take the accent colour of the playing track. Search is the fifth item, as in Nuvio.
  */
 @Composable
 private fun BottomBar(
     selected: HomeTab,
     searching: Boolean,
-    backdrop: LayerBackdrop,
+    hazeState: HazeState,
+    scrollState: NuvioNavBarScrollState,
     onTab: (HomeTab) -> Unit,
     onSearch: () -> Unit,
 ) {
-    val accent = LocalAccent.current
-    val tabs = HomeTab.values()
-    Row(
-        Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        BoxWithConstraints(Modifier.weight(1f).height(68.dp)) {
-            val inner = 5.dp
-            val tabW = (maxWidth - inner * 2) / tabs.size
-            val tabWpx = with(LocalDensity.current) { tabW.toPx() }
-            val maxPx = tabWpx * (tabs.size - 1)
-
-            var dragging by remember { mutableStateOf(false) }
-            var dragPx by remember { mutableFloatStateOf(0f) }
-            val animPx by animateFloatAsState(
-                targetValue = selected.ordinal * tabWpx,
-                animationSpec = spring(dampingRatio = 0.7f, stiffness = 420f),
-                label = "tabX",
-            )
-            val swell by animateFloatAsState(
-                targetValue = if (dragging) 1f else 0f,
-                animationSpec = spring(dampingRatio = 0.55f, stiffness = 380f),
-                label = "swell",
-            )
-            val indicatorPx = if (dragging) dragPx else animPx
-            val shown = (indicatorPx / tabWpx + 0.5f).toInt().coerceIn(0, tabs.lastIndex)
-
-            // Blurred frosted bar.
-            GlassSurface(
-                backdrop = backdrop,
-                modifier = Modifier.fillMaxSize(),
-                corner = 34.dp,
-                tint = BarTint,
-                blurRadius = BarBlur,
-            ) {
-                Box(
-                    Modifier
-                        .fillMaxSize()
-                        .border(0.8.dp, Color.White.copy(alpha = 0.16f), RoundedCornerShape(34.dp))
-                )
-            }
-
-            // Sliding glass lens under the selected tab.
-            GlassSurface(
-                backdrop = backdrop,
-                modifier = Modifier
-                    .padding(inner)
-                    .offset { IntOffset(indicatorPx.roundToInt(), 0) }
-                    .width(tabW)
-                    .fillMaxHeight()
-                    .graphicsLayer {
-                        val s = 1f + 0.10f * swell
-                        scaleX = s
-                        scaleY = s
-                    },
-                corner = 29.dp,
-                tint = Color.White.copy(alpha = 0.20f + 0.10f * swell),
-                blurRadius = 16.dp,
-            ) {
-                Box(
-                    Modifier
-                        .fillMaxSize()
-                        .border(0.8.dp, Color.White.copy(alpha = 0.22f), RoundedCornerShape(29.dp))
-                )
-            }
-
-            // Icons + labels (also handle taps and drag-to-select).
-            Row(
-                Modifier
-                    .fillMaxSize()
-                    .padding(inner)
-                    .pointerInput(selected, tabWpx) {
-                        detectHorizontalDragGestures(
-                            onDragStart = {
-                                dragging = true
-                                dragPx = selected.ordinal * tabWpx
-                            },
-                            onDragEnd = {
-                                val idx = (dragPx / tabWpx + 0.5f).toInt().coerceIn(0, tabs.lastIndex)
-                                dragging = false
-                                onTab(tabs[idx])
-                            },
-                            onDragCancel = { dragging = false },
-                            onHorizontalDrag = { change, delta ->
-                                change.consume()
-                                dragPx = (dragPx + delta).coerceIn(0f, maxPx)
-                            },
-                        )
-                    },
-            ) {
-                tabs.forEachIndexed { i, t ->
-                    val color = if (i == shown) accent else Color.White.copy(alpha = 0.62f)
-                    Column(
-                        Modifier
-                            .weight(1f)
-                            .fillMaxHeight()
-                            .clip(RoundedCornerShape(29.dp))
-                            .clickable { onTab(t) },
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center,
-                    ) {
-                        Icon(t.icon, contentDescription = t.label, modifier = Modifier.size(24.dp), tint = color)
-                        Text(t.label, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, color = color)
-                    }
-                }
-            }
-        }
-        GlassButton(
-            backdrop = backdrop,
-            size = 68.dp,
-            onClick = onSearch,
-            tint = if (searching) accent.copy(alpha = 0.35f) else BarTint,
-            blurRadius = BarBlur,
-        ) {
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .border(0.8.dp, Color.White.copy(alpha = 0.16f), CircleShape)
-            )
-            Icon(
-                Icons.Filled.Search,
-                contentDescription = "Search",
-                modifier = Modifier.align(Alignment.Center).size(26.dp),
-                tint = accent,
-            )
-        }
-    }
+    val items = HomeTab.values().map { t ->
+        FloatingNavigationItem(
+            label = t.label,
+            selected = !searching && t == selected,
+            onClick = { onTab(t) },
+            icon = t.icon,
+        )
+    } + FloatingNavigationItem(
+        label = "Search",
+        selected = searching,
+        onClick = onSearch,
+        icon = Icons.Filled.Search,
+    )
+    FloatingNavigationBar(
+        items = items,
+        scrollState = scrollState,
+        hazeState = hazeState,
+    )
 }
 
 @Composable
