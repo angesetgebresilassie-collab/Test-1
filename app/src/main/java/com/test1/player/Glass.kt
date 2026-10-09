@@ -1,13 +1,8 @@
 package com.test1.player
 
 import androidx.compose.animation.Crossfade
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -27,9 +22,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
@@ -46,11 +44,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import com.kyant.backdrop.backdrops.LayerBackdrop
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
 import com.kyant.backdrop.effects.lens
 import com.kyant.backdrop.effects.vibrancy
+import kotlinx.coroutines.delay
 import kotlin.math.cos
 import kotlin.math.sin
 
@@ -238,9 +240,14 @@ private fun hueShift(c: Color, degrees: Float): Color {
 /**
  * Dark backdrop for the glass to refract: near-black with faint drifting colour glows
  * (tinted by the current artwork) and a dim, blurred copy of the artwork.
+ *
+ * Performance: every redraw of this layer makes all the glass above it (mini player, buttons,
+ * the Nuvio nav bar's blur and refraction) re-render. The glows drift very slowly and softly, so
+ * they advance ~15 times a second instead of every frame, and stop completely while [paused]
+ * (full-screen player or a sheet is covering them) or while the app is in the background.
  */
 @Composable
-fun LiquidBackground(accent: Color?, art: ImageBitmap?) {
+fun LiquidBackground(accent: Color?, art: ImageBitmap?, paused: Boolean = false) {
     val palette = remember(accent) {
         if (accent != null) {
             listOf(accent, hueShift(accent, 35f), hueShift(accent, -45f), hueShift(accent, 150f))
@@ -248,22 +255,23 @@ fun LiquidBackground(accent: Color?, art: ImageBitmap?) {
             listOf(Color(0xFF3D5AFE), Color(0xFF7C4DFF), Color(0xFF00B0FF), Color(0xFF1DE9B6))
         }
     }
-    val transition = rememberInfiniteTransition(label = "liquid")
-    val a by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(26000, easing = LinearEasing)),
-        label = "a",
-    )
-    val b by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(37000, easing = LinearEasing)),
-        label = "b",
-    )
+    var elapsedMs by remember { mutableLongStateOf(0L) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    LaunchedEffect(paused, lifecycleOwner) {
+        if (paused) return@LaunchedEffect
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                delay(66)
+                elapsedMs += 66
+            }
+        }
+    }
 
     Box(Modifier.fillMaxSize().background(Color(0xFF040406))) {
         Canvas(Modifier.fillMaxSize()) {
+            // Read here (draw phase only), so a tick redraws just this canvas.
+            val a = (elapsedMs % 26_000L) / 26_000f
+            val b = (elapsedMs % 37_000L) / 37_000f
             val w = size.width
             val h = size.height
             val tau = (2.0 * Math.PI).toFloat()
