@@ -28,10 +28,13 @@ import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.SkipPrevious
+import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -46,7 +49,7 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
@@ -55,17 +58,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.kyant.backdrop.backdrops.LayerBackdrop
-import com.kyant.backdrop.backdrops.layerBackdrop
-import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 
 @Composable
 fun NowPlayingScreen(song: Song, st: PlayerState, vm: PlayerViewModel, onClose: () -> Unit) {
     BackHandler(onBack = onClose)
 
-    val backdrop = rememberLayerBackdrop()
     val art = rememberArtwork(song, st.metadata?.artworkUrl)
-    val accent = remember(art) { art?.accentColor() }
     val pos = remember { mutableLongStateOf(0L) }
     var showLyrics by remember { mutableStateOf(false) }
     val lines = remember(st.metadata?.synced) { parseLrc(st.metadata?.synced) }
@@ -78,15 +76,18 @@ fun NowPlayingScreen(song: Song, st: PlayerState, vm: PlayerViewModel, onClose: 
         }
     }
 
+    val colors = MaterialTheme.colorScheme
     Box(
         Modifier
             .fillMaxSize()
+            // Material surface washed with the colour of the playing track.
+            .background(
+                Brush.verticalGradient(
+                    listOf(colors.primaryContainer, colors.surfaceContainer, colors.background)
+                )
+            )
             .pointerInput(Unit) { detectTapGestures { } } // don't let taps fall through to the list
     ) {
-        Box(Modifier.layerBackdrop(backdrop).fillMaxSize()) {
-            LiquidBackground(accent, art)
-        }
-
         Column(
             Modifier
                 .fillMaxSize()
@@ -99,20 +100,12 @@ fun NowPlayingScreen(song: Song, st: PlayerState, vm: PlayerViewModel, onClose: 
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                GlassButton(backdrop, 44.dp, onClose) {
-                    Icon(
-                        Icons.Filled.KeyboardArrowDown,
-                        contentDescription = "Close",
-                        modifier = Modifier.align(Alignment.Center),
-                        tint = Color.White,
-                    )
+                FilledTonalIconButton(onClick = onClose) {
+                    Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Close")
                 }
-                GlassPill(
-                    backdrop = backdrop,
-                    label = if (showLyrics) "Player" else "Lyrics",
-                    onClick = { showLyrics = !showLyrics },
-                    height = 44.dp,
-                )
+                FilledTonalButton(onClick = { showLyrics = !showLyrics }) {
+                    Text(if (showLyrics) "Player" else "Lyrics")
+                }
             }
 
             if (showLyrics) {
@@ -123,7 +116,7 @@ fun NowPlayingScreen(song: Song, st: PlayerState, vm: PlayerViewModel, onClose: 
 
             SeekBar(pos, song.durationMs, vm::seekTo)
             Spacer(Modifier.height(12.dp))
-            Controls(backdrop, st.playing, vm)
+            Controls(st.playing, vm)
             Spacer(Modifier.height(8.dp))
         }
     }
@@ -142,16 +135,17 @@ private fun PlayerPage(modifier: Modifier, st: PlayerState, song: Song, art: Ima
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Box(
-            Modifier
+        Surface(
+            modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(1f)
                 .graphicsLayer {
                     scaleX = scale
                     scaleY = scale
-                }
-                .clip(RoundedCornerShape(32.dp))
-                .background(Color.White.copy(alpha = 0.08f))
+                },
+            shape = RoundedCornerShape(28.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerHighest,
+            shadowElevation = 12.dp,
         ) {
             if (art != null) {
                 Image(
@@ -170,14 +164,14 @@ private fun PlayerPage(modifier: Modifier, st: PlayerState, song: Song, art: Ima
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center,
-            color = Color.White,
         )
         Text(
             st.metadata?.artist ?: song.artist,
+            style = MaterialTheme.typography.titleMedium,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center,
-            color = Color.White.copy(alpha = 0.7f),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
 }
@@ -204,13 +198,12 @@ private fun LyricsPage(
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    color = Color.White,
                 )
                 Text(
                     st.metadata?.artist ?: song.artist,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    color = Color.White.copy(alpha = 0.7f),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
@@ -232,6 +225,7 @@ private fun SeekBar(pos: LongState, durationMs: Long, onSeek: (Long) -> Unit) {
     val shown = if (dragging) dragValue else frac
 
     Column(Modifier.fillMaxWidth()) {
+        // Default Material 3 slider: primary (the track's accent colour) thumb and active track.
         Slider(
             value = shown,
             onValueChange = {
@@ -242,15 +236,18 @@ private fun SeekBar(pos: LongState, durationMs: Long, onSeek: (Long) -> Unit) {
                 onSeek((dragValue * durationMs).toLong())
                 dragging = false
             },
-            colors = SliderDefaults.colors(
-                thumbColor = Color.White,
-                activeTrackColor = Color.White,
-                inactiveTrackColor = Color.White.copy(alpha = 0.25f),
-            ),
         )
         Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(formatTime((shown * durationMs).toLong()), color = Color.White.copy(alpha = 0.6f))
-            Text(formatTime(durationMs), color = Color.White.copy(alpha = 0.6f))
+            Text(
+                formatTime((shown * durationMs).toLong()),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                formatTime(durationMs),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
@@ -261,34 +258,31 @@ private fun formatTime(ms: Long): String {
 }
 
 @Composable
-private fun Controls(backdrop: LayerBackdrop, playing: Boolean, vm: PlayerViewModel) {
+private fun Controls(playing: Boolean, vm: PlayerViewModel) {
     Row(
         Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceEvenly,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        GlassButton(backdrop, 60.dp, vm::previous) {
+        FilledTonalIconButton(onClick = vm::previous, modifier = Modifier.size(60.dp)) {
             Icon(
                 Icons.Rounded.SkipPrevious,
                 contentDescription = "Previous",
-                modifier = Modifier.align(Alignment.Center).size(34.dp),
-                tint = Color.White,
+                modifier = Modifier.size(34.dp),
             )
         }
-        GlassButton(backdrop, 84.dp, vm::toggle) {
+        FilledIconButton(onClick = vm::toggle, modifier = Modifier.size(84.dp)) {
             Icon(
                 if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
                 contentDescription = if (playing) "Pause" else "Play",
-                modifier = Modifier.align(Alignment.Center).size(48.dp),
-                tint = Color.White,
+                modifier = Modifier.size(48.dp),
             )
         }
-        GlassButton(backdrop, 60.dp, vm::next) {
+        FilledTonalIconButton(onClick = vm::next, modifier = Modifier.size(60.dp)) {
             Icon(
                 Icons.Rounded.SkipNext,
                 contentDescription = "Next",
-                modifier = Modifier.align(Alignment.Center).size(34.dp),
-                tint = Color.White,
+                modifier = Modifier.size(34.dp),
             )
         }
     }
