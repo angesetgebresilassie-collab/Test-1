@@ -4,6 +4,11 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -11,8 +16,8 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -38,9 +43,6 @@ import androidx.compose.material.icons.filled.QueueMusic
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Shuffle
-import androidx.compose.material.icons.rounded.Pause
-import androidx.compose.material.icons.rounded.PlayArrow
-import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -63,6 +65,8 @@ import androidx.compose.ui.unit.*
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.rememberHazeState
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.flow.sample
 
 private enum class HomeTab(val label: String, val icon: ImageVector) {
     Songs("Songs", Icons.Filled.MusicNote),
@@ -128,10 +132,13 @@ private fun musicScheme(accent: Color): ColorScheme {
     )
 }
 
+@OptIn(FlowPreview::class)
 @Composable
 fun Home(vm: PlayerViewModel, granted: Boolean, onGrant: () -> Unit, onOpenSettings: () -> Unit) {
     val rawSongs by vm.songs.collectAsState()
-    val found by vm.found.collectAsState()
+    // The background lookup publishes a new map every couple of seconds; sampling it keeps the
+    // lists from being rebuilt and recomposed on every single result while you scroll.
+    val found by remember(vm) { vm.found.sample(1200) }.collectAsState(initial = vm.found.value)
     val st by vm.state.collectAsState()
     val playlists by vm.playlists.collectAsState()
     val loaded by vm.loaded.collectAsState()
@@ -152,14 +159,13 @@ fun Home(vm: PlayerViewModel, granted: Boolean, onGrant: () -> Unit, onOpenSetti
     // Blur source for the floating nav bar, and its scroll-aware label state.
     val hazeState = rememberHazeState()
     val navScroll = rememberNuvioNavBarScrollState()
-    val art = rememberArtwork(st.current, st.metadata?.artworkUrl)
-    val accent = remember(art) { art?.accentColor() }
+    // Small decode + off-main-thread colour extraction: changing song no longer stalls the UI.
+    val art = rememberArtwork(st.current, st.metadata?.artworkUrl, 96)
+    val accent = rememberArtAccent(art)
     // The whole UI follows the colour of the track that is playing (blue when nothing is).
-    val accentColor by animateColorAsState(
-        targetValue = accent ?: LiquidBlue,
-        animationSpec = tween(700),
-        label = "accent",
-    )
+    // Not animated here on purpose: animating it would recompose the entire screen every frame.
+    // The nav bar and mini player fade the colour locally instead.
+    val accentColor = accent ?: LiquidBlue
     val scheme = remember(accentColor) { musicScheme(accentColor) }
 
     var tab by remember { mutableStateOf(HomeTab.Songs) }
@@ -170,6 +176,8 @@ fun Home(vm: PlayerViewModel, granted: Boolean, onGrant: () -> Unit, onOpenSetti
     var nowPlayingOpen by remember { mutableStateOf(false) }
     val lastDetail = remember { mutableStateOf<Detail?>(null) }
     if (detail != null) lastDetail.value = detail
+    val lastSong = remember { mutableStateOf<Song?>(null) }
+    st.current?.let { lastSong.value = it }
 
     val q = query.trim()
     val albums = remember(songs) {
@@ -244,6 +252,7 @@ fun Home(vm: PlayerViewModel, granted: Boolean, onGrant: () -> Unit, onOpenSetti
                                 title = tab.label,
                                 searching = searching,
                                 query = query,
+                                scanning = scanning,
                                 onQuery = { query = it },
                                 onRefresh = vm::rescan,
                             )
@@ -276,7 +285,7 @@ fun Home(vm: PlayerViewModel, granted: Boolean, onGrant: () -> Unit, onOpenSetti
                                             Text("Rescan storage")
                                         }
                                     }
-                                    else -> Crossfade(targetState = tab, label = "tab") { t ->
+                                    else -> Crossfade(targetState = tab, animationSpec = tween(220), label = "tab") { t ->
                                         when (t) {
                                             HomeTab.Songs -> SongGrid(
                                                 songs = shownSongs,
@@ -331,17 +340,23 @@ fun Home(vm: PlayerViewModel, granted: Boolean, onGrant: () -> Unit, onOpenSetti
                         }
                     }
 
-                    // Mini player, then the (unchanged) Nuvio floating nav bar.
+                    // Mini player (slides up when a song starts), then the Nuvio floating nav bar.
                     Column(
                         Modifier
                             .align(Alignment.BottomCenter)
                             .navigationBarsPadding()
                             .padding(bottom = 12.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
-                        st.current?.let { song ->
-                            Box(Modifier.padding(horizontal = 16.dp)) {
-                                MiniPlayer(song, st, vm) { nowPlayingOpen = true }
+                        AnimatedVisibility(
+                            visible = st.current != null,
+                            enter = slideInVertically(spring(dampingRatio = 0.75f, stiffness = 380f)) { it } +
+                                fadeIn(tween(200)),
+                            exit = slideOutVertically(tween(220)) { it } + fadeOut(tween(160)),
+                        ) {
+                            lastSong.value?.let { song ->
+                                Box(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 10.dp)) {
+                                    MiniPlayer(song, st, vm) { nowPlayingOpen = true }
+                                }
                             }
                         }
                         BottomBar(
@@ -389,7 +404,7 @@ fun Home(vm: PlayerViewModel, granted: Boolean, onGrant: () -> Unit, onOpenSetti
 }
 
 // ---------------------------------------------------------------------------------------------
-// Header, search, bottom bar, mini player
+// Header, search, bottom bar
 // ---------------------------------------------------------------------------------------------
 
 @Composable
@@ -397,6 +412,7 @@ private fun Header(
     title: String,
     searching: Boolean,
     query: String,
+    scanning: Boolean,
     onQuery: (String) -> Unit,
     onRefresh: () -> Unit,
 ) {
@@ -409,12 +425,33 @@ private fun Header(
                 modifier = Modifier.weight(1f),
             )
             FilledTonalIconButton(onClick = onRefresh) {
-                Icon(Icons.Filled.Refresh, contentDescription = "Rescan")
+                RefreshIcon(scanning)
             }
         }
         AnimatedVisibility(visible = searching) {
             SearchField(query, onQuery)
         }
+    }
+}
+
+/** Spins while the library is being rescanned. The transition only exists while scanning. */
+@Composable
+private fun RefreshIcon(scanning: Boolean) {
+    if (scanning) {
+        val transition = rememberInfiniteTransition(label = "rescan_spin")
+        val angle by transition.animateFloat(
+            initialValue = 0f,
+            targetValue = 360f,
+            animationSpec = infiniteRepeatable(tween(900, easing = LinearEasing)),
+            label = "rescan_angle",
+        )
+        Icon(
+            Icons.Filled.Refresh,
+            contentDescription = "Rescanning",
+            modifier = Modifier.graphicsLayer { rotationZ = angle },
+        )
+    } else {
+        Icon(Icons.Filled.Refresh, contentDescription = "Rescan")
     }
 }
 
@@ -440,9 +477,10 @@ private fun SearchField(query: String, onQuery: (String) -> Unit) {
 }
 
 /**
- * Nuvio's floating jelly nav bar (see JellyNavBar.kt), left exactly as it was: a blurred pill
- * with a spring-driven selection lens, drag-to-select and labels that collapse while scrolling.
- * Search is the fifth item, as in Nuvio.
+ * Nuvio's floating jelly nav bar (see JellyNavBar.kt), unchanged. Two things keep it cheap:
+ * the item list is remembered (it only changes when the selection does, so Home recomposing
+ * no longer rebuilds the bar), and the accent colour fades in here, so only the bar
+ * recomposes during the fade instead of the whole screen.
  */
 @Composable
 private fun BottomBar(
@@ -453,69 +491,30 @@ private fun BottomBar(
     onTab: (HomeTab) -> Unit,
     onSearch: () -> Unit,
 ) {
-    val items = HomeTab.values().map { t ->
-        FloatingNavigationItem(
-            label = t.label,
-            selected = !searching && t == selected,
-            onClick = { onTab(t) },
-            icon = t.icon,
+    val latestOnTab by rememberUpdatedState(onTab)
+    val latestOnSearch by rememberUpdatedState(onSearch)
+    val items = remember(selected, searching) {
+        HomeTab.values().map { t ->
+            FloatingNavigationItem(
+                label = t.label,
+                selected = !searching && t == selected,
+                onClick = { latestOnTab(t) },
+                icon = t.icon,
+            )
+        } + FloatingNavigationItem(
+            label = "Search",
+            selected = searching,
+            onClick = { latestOnSearch() },
+            icon = Icons.Filled.Search,
         )
-    } + FloatingNavigationItem(
-        label = "Search",
-        selected = searching,
-        onClick = onSearch,
-        icon = Icons.Filled.Search,
-    )
-    FloatingNavigationBar(
-        items = items,
-        scrollState = scrollState,
-        hazeState = hazeState,
-    )
-}
-
-@Composable
-private fun MiniPlayer(song: Song, st: PlayerState, vm: PlayerViewModel, onOpen: () -> Unit) {
-    val art = rememberArtwork(song, st.metadata?.artworkUrl)
-    Surface(
-        modifier = Modifier.fillMaxWidth().height(64.dp),
-        shape = RoundedCornerShape(20.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHighest,
-        tonalElevation = 3.dp,
-        shadowElevation = 6.dp,
-    ) {
-        Row(
-            Modifier.fillMaxSize().clickable(onClick = onOpen).padding(start = 10.dp, end = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            ArtworkBox(art, Modifier.size(44.dp), 12.dp)
-            Spacer(Modifier.width(12.dp))
-            Column(Modifier.weight(1f)) {
-                Text(
-                    st.metadata?.title ?: song.title,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Text(
-                    st.metadata?.artist ?: song.artist,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            IconButton(onClick = vm::toggle) {
-                Icon(
-                    if (st.playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                    contentDescription = if (st.playing) "Pause" else "Play",
-                    modifier = Modifier.size(30.dp),
-                )
-            }
-            IconButton(onClick = vm::next) {
-                Icon(Icons.Rounded.SkipNext, contentDescription = "Next", modifier = Modifier.size(30.dp))
-            }
-        }
+    }
+    val accent by animateColorAsState(LocalAccent.current, tween(600), label = "nav_accent")
+    CompositionLocalProvider(LocalAccent provides accent) {
+        FloatingNavigationBar(
+            items = items,
+            scrollState = scrollState,
+            hazeState = hazeState,
+        )
     }
 }
 
@@ -581,12 +580,19 @@ private fun MediaCard(
     onMenu: (() -> Unit)? = null,
 ) {
     val primary = MaterialTheme.colorScheme.primary
+    val source = remember { MutableInteractionSource() }
+    val borderColor by animateColorAsState(
+        targetValue = if (highlighted) primary else Color.Transparent,
+        animationSpec = tween(250),
+        label = "card_border",
+    )
     Card(
         onClick = onClick,
-        modifier = Modifier.fillMaxWidth(),
+        interactionSource = source,
+        modifier = Modifier.fillMaxWidth().pressScale(source, 0.95f),
         shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
-        border = if (highlighted) BorderStroke(2.dp, primary) else null,
+        border = if (borderColor.alpha > 0.01f) BorderStroke(2.dp, borderColor) else null,
     ) {
         Box {
             ArtworkBox(art, Modifier.fillMaxWidth().aspectRatio(1f), 0.dp)
@@ -598,7 +604,7 @@ private fun MediaCard(
                         .size(32.dp)
                         .clip(CircleShape)
                         .background(Color.Black.copy(alpha = 0.5f))
-                        .clickable(onClick = onMenu),
+                        .bouncyClickable(0.85f, onClick = onMenu),
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(
@@ -668,7 +674,7 @@ private fun TrackRow(
                     color = if (isCurrent) primary else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             } else {
-                val art = rememberArtwork(song, song.artworkUrl)
+                val art = rememberArtwork(song, song.artworkUrl, 160)
                 ArtworkBox(art, Modifier.size(48.dp), 10.dp)
             }
         },
@@ -682,7 +688,7 @@ private fun TrackRow(
             }
         },
         colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-        modifier = Modifier.clickable(onClick = onClick),
+        modifier = Modifier.bouncyClickable(0.97f, onClick = onClick),
     )
 }
 
@@ -728,7 +734,8 @@ private fun SongGrid(
             }
         }
         items(songs, key = { it.id }) { song ->
-            val art = rememberArtwork(song, song.artworkUrl)
+            // Decoded at card size, not full size: much less work and memory while scrolling.
+            val art = rememberArtwork(song, song.artworkUrl, 400)
             MediaCard(
                 art = art,
                 title = song.title,
@@ -755,7 +762,7 @@ private fun AlbumGrid(albums: List<AlbumItem>, bottomPad: Dp, onOpen: (AlbumItem
     ) {
         items(albums, key = { it.id }) { album ->
             val cover = album.songs.coverSong()
-            val art = rememberArtwork(cover, cover?.artworkUrl)
+            val art = rememberArtwork(cover, cover?.artworkUrl, 400)
             MediaCard(
                 art = art,
                 title = album.name,
@@ -775,7 +782,7 @@ private fun ArtistList(artists: List<ArtistItem>, bottomPad: Dp, onOpen: (Artist
         if (artists.isEmpty()) item(key = "empty") { EmptyHint("No matching artists") }
         items(artists, key = { it.name }) { artist ->
             val cover = artist.songs.coverSong()
-            val art = rememberArtwork(cover, cover?.artworkUrl)
+            val art = rememberArtwork(cover, cover?.artworkUrl, 160)
             ListItem(
                 headlineContent = {
                     Text(
@@ -788,7 +795,7 @@ private fun ArtistList(artists: List<ArtistItem>, bottomPad: Dp, onOpen: (Artist
                 supportingContent = { Text("${artist.songs.size} songs") },
                 leadingContent = { ArtworkBox(art, Modifier.size(56.dp), 28.dp) },
                 colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                modifier = Modifier.clickable { onOpen(artist) },
+                modifier = Modifier.bouncyClickable(0.97f) { onOpen(artist) },
             )
         }
     }
@@ -823,7 +830,7 @@ private fun PlaylistList(
                     }
                 },
                 colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                modifier = Modifier.clickable(onClick = onNew),
+                modifier = Modifier.bouncyClickable(0.97f, onClick = onNew),
             )
         }
         if (playlists.isEmpty()) {
@@ -833,7 +840,7 @@ private fun PlaylistList(
         }
         items(playlists, key = { it.id }) { playlist ->
             val cover = playlist.songIds.mapNotNull { songById[it] }.coverSong()
-            val art = rememberArtwork(cover, cover?.artworkUrl)
+            val art = rememberArtwork(cover, cover?.artworkUrl, 160)
             ListItem(
                 headlineContent = {
                     Text(
@@ -846,7 +853,7 @@ private fun PlaylistList(
                 supportingContent = { Text("${playlist.songIds.size} songs") },
                 leadingContent = { ArtworkBox(art, Modifier.size(56.dp), 14.dp) },
                 colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                modifier = Modifier.clickable { onOpen(playlist) },
+                modifier = Modifier.bouncyClickable(0.97f) { onOpen(playlist) },
             )
         }
     }
@@ -870,7 +877,7 @@ private fun DetailScreen(
     onDelete: (() -> Unit)?,
 ) {
     val cover = data.songs.coverSong()
-    val art = rememberArtwork(cover, cover?.artworkUrl)
+    val art = rememberArtwork(cover, cover?.artworkUrl, 640)
 
     Column(
         Modifier
@@ -1047,7 +1054,7 @@ private fun MenuItem(text: String, destructive: Boolean = false, onClick: () -> 
             )
         },
         colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-        modifier = Modifier.clip(RoundedCornerShape(16.dp)).clickable(onClick = onClick),
+        modifier = Modifier.clip(RoundedCornerShape(16.dp)).bouncyClickable(0.97f, onClick = onClick),
     )
 }
 
