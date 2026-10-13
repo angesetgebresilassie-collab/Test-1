@@ -17,6 +17,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -47,6 +48,7 @@ class PlayerViewModel(private val app: Application) : AndroidViewModel(app) {
     private val pending = mutableListOf<(MediaController) -> Unit>()
 
     private var lookupJob: Job? = null
+    private var queueJob: Job? = null
     private val attempted = mutableSetOf<Long>()
 
     init { load() }
@@ -185,12 +187,32 @@ class PlayerViewModel(private val app: Application) : AndroidViewModel(app) {
         if (queue.isNotEmpty()) startQueue(queue.shuffled(), 0)
     }
 
+    /**
+     * Starts the chosen song at once, then fills in the rest of the queue. Building thousands of
+     * MediaItems and handing them to the player in one go used to block the main thread for
+     * seconds before anything played.
+     */
     private fun startQueue(list: List<Song>, index: Int) {
         playMetadata(list[index])
-        withController { mc ->
-            mc.setMediaItems(list.map { it.toMediaItem() }, index, 0)
-            mc.prepare()
-            mc.play()
+        queueJob?.cancel()
+        queueJob = viewModelScope.launch {
+            val first = list[index].toMediaItem()
+            withController { mc ->
+                mc.setMediaItem(first)
+                mc.prepare()
+                mc.play()
+            }
+            if (list.size == 1) return@launch
+            val (before, after) = withContext(Dispatchers.Default) {
+                list.subList(0, index).map { it.toMediaItem() } to
+                    list.subList(index + 1, list.size).map { it.toMediaItem() }
+            }
+            withController { mc ->
+                // Skip if another song was started in the meantime.
+                if (mc.currentMediaItem?.mediaId != first.mediaId) return@withController
+                if (after.isNotEmpty()) mc.addMediaItems(after)
+                if (before.isNotEmpty()) mc.addMediaItems(0, before)
+            }
         }
     }
 
