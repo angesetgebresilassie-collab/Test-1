@@ -251,7 +251,7 @@ fun Home(vm: PlayerViewModel, granted: Boolean, onGrant: () -> Unit, onOpenSetti
                                 .graphicsLayer { alpha = if (detail != null) 0f else 1f }
                         ) {
                             Header(
-                                title = tab.label,
+                                title = if (searching) "Search" else tab.label,
                                 searching = searching,
                                 query = query,
                                 scanning = scanning,
@@ -287,6 +287,21 @@ fun Home(vm: PlayerViewModel, granted: Boolean, onGrant: () -> Unit, onOpenSetti
                                             Text("Rescan storage")
                                         }
                                     }
+                                    searching && q.isNotEmpty() -> SearchResults(
+                                        query = q,
+                                        songs = shownSongs,
+                                        albums = shownAlbums,
+                                        artists = shownArtists,
+                                        playlists = shownPlaylists,
+                                        songById = songById,
+                                        st = st,
+                                        bottomPad = bottomPad,
+                                        onPlay = { vm.play(it, shownSongs) },
+                                        onMenu = { dialog = Dlg.SongMenu(it, null) },
+                                        onAlbum = { detail = Detail.AlbumD(it.id) },
+                                        onArtist = { detail = Detail.ArtistD(it.name) },
+                                        onPlaylist = { detail = Detail.PlaylistD(it.id) },
+                                    )
                                     else -> Crossfade(targetState = tab, animationSpec = tween(220), label = "tab") { t ->
                                         when (t) {
                                             HomeTab.Songs -> SongGrid(
@@ -468,7 +483,7 @@ private fun SearchField(query: String, onQuery: (String) -> Unit) {
         value = query,
         onValueChange = onQuery,
         singleLine = true,
-        placeholder = { Text("Search your music") },
+        placeholder = { Text("Songs, albums, artists, playlists") },
         leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
         shape = RoundedCornerShape(28.dp),
         colors = TextFieldDefaults.colors(
@@ -786,24 +801,71 @@ private fun ArtistList(artists: List<ArtistItem>, bottomPad: Dp, onOpen: (Artist
     ) {
         if (artists.isEmpty()) item(key = "empty") { EmptyHint("No matching artists") }
         items(artists, key = { it.name }) { artist ->
-            val cover = artist.songs.coverSong()
-            val art = rememberArtwork(cover, cover?.artworkUrl, 160)
-            ListItem(
-                headlineContent = {
-                    Text(
-                        artist.name,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        fontWeight = FontWeight.Medium,
-                    )
-                },
-                supportingContent = { Text("${artist.songs.size} songs") },
-                leadingContent = { ArtworkBox(art, Modifier.size(56.dp), 28.dp) },
-                colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                modifier = Modifier.bouncyClickable(0.97f) { onOpen(artist) },
-            )
+            ArtistRow(artist, onOpen)
         }
     }
+}
+
+@Composable
+private fun ArtistRow(artist: ArtistItem, onOpen: (ArtistItem) -> Unit) {
+    val cover = artist.songs.coverSong()
+    val art = rememberArtwork(cover, cover?.artworkUrl, 160)
+    ListItem(
+        headlineContent = {
+            Text(
+                artist.name,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                fontWeight = FontWeight.Medium,
+            )
+        },
+        supportingContent = { Text("${artist.songs.size} songs") },
+        leadingContent = { ArtworkBox(art, Modifier.size(56.dp), 28.dp) },
+        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+        modifier = Modifier.bouncyClickable(0.97f) { onOpen(artist) },
+    )
+}
+
+@Composable
+private fun AlbumRow(album: AlbumItem, onOpen: (AlbumItem) -> Unit) {
+    val cover = album.songs.coverSong()
+    val art = rememberArtwork(cover, cover?.artworkUrl, 160)
+    ListItem(
+        headlineContent = {
+            Text(
+                album.name,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                fontWeight = FontWeight.Medium,
+            )
+        },
+        supportingContent = {
+            Text(album.artist, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        },
+        leadingContent = { ArtworkBox(art, Modifier.size(56.dp), 14.dp) },
+        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+        modifier = Modifier.bouncyClickable(0.97f) { onOpen(album) },
+    )
+}
+
+@Composable
+private fun PlaylistRow(playlist: Playlist, songById: Map<Long, Song>, onOpen: (Playlist) -> Unit) {
+    val cover = playlist.songIds.mapNotNull { songById[it] }.coverSong()
+    val art = rememberArtwork(cover, cover?.artworkUrl, 160)
+    ListItem(
+        headlineContent = {
+            Text(
+                playlist.name,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                fontWeight = FontWeight.Medium,
+            )
+        },
+        supportingContent = { Text("${playlist.songIds.size} songs") },
+        leadingContent = { ArtworkBox(art, Modifier.size(56.dp), 14.dp) },
+        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+        modifier = Modifier.bouncyClickable(0.97f) { onOpen(playlist) },
+    )
 }
 
 @Composable
@@ -844,22 +906,74 @@ private fun PlaylistList(
             }
         }
         items(playlists, key = { it.id }) { playlist ->
-            val cover = playlist.songIds.mapNotNull { songById[it] }.coverSong()
-            val art = rememberArtwork(cover, cover?.artworkUrl, 160)
-            ListItem(
-                headlineContent = {
-                    Text(
-                        playlist.name,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        fontWeight = FontWeight.Medium,
-                    )
-                },
-                supportingContent = { Text("${playlist.songIds.size} songs") },
-                leadingContent = { ArtworkBox(art, Modifier.size(56.dp), 14.dp) },
-                colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                modifier = Modifier.bouncyClickable(0.97f) { onOpen(playlist) },
-            )
+            PlaylistRow(playlist, songById, onOpen)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Global search results
+// ---------------------------------------------------------------------------------------------
+
+@Composable
+private fun SectionTitle(text: String, count: Int) {
+    Text(
+        "$text · $count",
+        style = MaterialTheme.typography.titleMedium,
+        fontWeight = FontWeight.SemiBold,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(top = 16.dp, bottom = 4.dp),
+    )
+}
+
+/** One list for the whole library: songs, albums, artists and playlists matching the query. */
+@Composable
+private fun SearchResults(
+    query: String,
+    songs: List<Song>,
+    albums: List<AlbumItem>,
+    artists: List<ArtistItem>,
+    playlists: List<Playlist>,
+    songById: Map<Long, Song>,
+    st: PlayerState,
+    bottomPad: Dp,
+    onPlay: (Song) -> Unit,
+    onMenu: (Song) -> Unit,
+    onAlbum: (AlbumItem) -> Unit,
+    onArtist: (ArtistItem) -> Unit,
+    onPlaylist: (Playlist) -> Unit,
+) {
+    val empty = songs.isEmpty() && albums.isEmpty() && artists.isEmpty() && playlists.isEmpty()
+    LazyColumn(
+        contentPadding = PaddingValues(start = 4.dp, end = 4.dp, top = 0.dp, bottom = bottomPad),
+    ) {
+        if (empty) {
+            item(key = "none") { EmptyHint("No results for \"$query\"") }
+        }
+        if (songs.isNotEmpty()) {
+            item(key = "h_songs") { SectionTitle("Songs", songs.size) }
+            items(songs.take(20), key = { "s${it.id}" }) { song ->
+                TrackRow(
+                    song = song,
+                    index = null,
+                    subtitle = song.artist,
+                    isCurrent = st.current?.id == song.id,
+                    onClick = { onPlay(song) },
+                    onMenu = { onMenu(song) },
+                )
+            }
+        }
+        if (albums.isNotEmpty()) {
+            item(key = "h_albums") { SectionTitle("Albums", albums.size) }
+            items(albums.take(10), key = { "al${it.id}" }) { album -> AlbumRow(album, onAlbum) }
+        }
+        if (artists.isNotEmpty()) {
+            item(key = "h_artists") { SectionTitle("Artists", artists.size) }
+            items(artists.take(10), key = { "ar${it.name}" }) { artist -> ArtistRow(artist, onArtist) }
+        }
+        if (playlists.isNotEmpty()) {
+            item(key = "h_playlists") { SectionTitle("Playlists", playlists.size) }
+            items(playlists, key = { "p${it.id}" }) { playlist -> PlaylistRow(playlist, songById, onPlaylist) }
         }
     }
 }
