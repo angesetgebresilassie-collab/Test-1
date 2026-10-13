@@ -43,9 +43,21 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
- * The Account tab's data: a display name, an avatar, and a background image with adjustable blur.
- * Images are copied (downscaled) into the app's private storage, so they keep working after the
- * original photo is moved or deleted. Everything is saved in SharedPreferences + files.
+ * How the floating nav bar behaves:
+ * Auto = tucks in (icons only) when you scroll down and expands when you scroll up,
+ * Tucked = always icons only, Expanded = always icons with labels.
+ */
+enum class NavMode(val label: String) {
+    Auto("Auto"),
+    Tucked("Tucked in"),
+    Expanded("Expanded"),
+}
+
+/**
+ * The Account tab's data: a display name, an avatar, and a background image with adjustable blur,
+ * plus the nav bar mode. Images are copied (downscaled) into the app's private storage, so they
+ * keep working after the original photo is moved or deleted. Everything is saved in
+ * SharedPreferences + files.
  *
  * Each value is its own flow so that, for example, dragging the blur slider or typing a name only
  * recomposes the piece of UI that shows it, not the whole Home screen.
@@ -58,12 +70,20 @@ class AccountViewModel(private val app: Application) : AndroidViewModel(app) {
     val blurDp = MutableStateFlow(prefs.getFloat("blur", 16f))
     val avatarPath = MutableStateFlow(existing(prefs.getString("avatar", null)))
     val backgroundPath = MutableStateFlow(existing(prefs.getString("background", null)))
+    val navMode = MutableStateFlow(
+        runCatching { NavMode.valueOf(prefs.getString("navMode", null) ?: "") }.getOrDefault(NavMode.Auto)
+    )
 
     private fun existing(path: String?): String? = path?.takeIf { File(it).exists() }
 
     fun setName(value: String) {
         name.value = value
         prefs.edit().putString("name", value).apply()
+    }
+
+    fun setNavMode(mode: NavMode) {
+        navMode.value = mode
+        prefs.edit().putString("navMode", mode.name).apply()
     }
 
     /** Live while the slider moves; [saveBlur] persists it when the finger lifts. */
@@ -208,6 +228,7 @@ fun AccountScreen(
 ) {
     val name by vm.name.collectAsState()
     val blur by vm.blurDp.collectAsState()
+    val navMode by vm.navMode.collectAsState()
     val imageOnly = PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
     val pickAvatar = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) vm.setAvatar(uri)
@@ -334,6 +355,38 @@ fun AccountScreen(
                 }
                 Text(
                     "The app's colour comes from this background until you play a song.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+
+        // Nav bar mode
+        Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(28.dp), colors = cardColors) {
+            Column(
+                Modifier.fillMaxWidth().padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text(
+                    "Navigation bar",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    NavMode.values().forEach { mode ->
+                        FilterChip(
+                            selected = navMode == mode,
+                            onClick = { vm.setNavMode(mode) },
+                            label = { Text(mode.label) },
+                        )
+                    }
+                }
+                Text(
+                    when (navMode) {
+                        NavMode.Auto -> "Tucks in when you scroll down and expands when you scroll up."
+                        NavMode.Tucked -> "Always tucked in: icons only."
+                        NavMode.Expanded -> "Always expanded: icons with labels."
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
