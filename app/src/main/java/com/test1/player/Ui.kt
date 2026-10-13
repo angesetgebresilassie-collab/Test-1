@@ -15,7 +15,10 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
@@ -60,6 +63,7 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -76,6 +80,7 @@ private enum class HomeTab(val label: String, val icon: ImageVector) {
     Albums("Albums", Icons.Filled.Album),
     Artists("Artists", Icons.Filled.Person),
     Playlists("Playlists", Icons.Filled.QueueMusic),
+    // Not in the nav bar: opened from the avatar button in the top-right corner.
     Account("Account", Icons.Filled.AccountCircle),
 }
 
@@ -168,13 +173,19 @@ fun Home(vm: PlayerViewModel, granted: Boolean, onGrant: () -> Unit, onOpenSetti
     val art = rememberArtwork(st.current, st.metadata?.artworkUrl, 96)
     val accent = rememberArtAccent(art)
 
-    // Account tab: the user's avatar and background (blur is read inside AppBackground itself).
+    // Account: the user's avatar and background (blur is read inside AppBackground itself).
     val account: AccountViewModel = viewModel()
     val avatarPath by account.avatarPath.collectAsState()
     val backgroundPath by account.backgroundPath.collectAsState()
+    val navMode by account.navMode.collectAsState()
     val avatarImage = rememberFileImage(avatarPath, 512)
     val backgroundImage = rememberFileImage(backgroundPath, 1600)
     val backgroundAccent = rememberBackgroundAccent(backgroundImage)
+
+    // Nav bar mode: Tucked / Expanded pin the labels; Auto leaves it to scrolling (see nestedScroll below).
+    LaunchedEffect(navMode) {
+        if (navMode == NavMode.Tucked) navScroll.collapse() else navScroll.expand()
+    }
 
     // The whole UI follows the colour of the track that is playing. Until a song plays (or if its
     // artwork is greyscale) it uses the colour of the user's background, then blue as a last resort.
@@ -247,12 +258,15 @@ fun Home(vm: PlayerViewModel, granted: Boolean, onGrant: () -> Unit, onOpenSetti
             Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                 Box(Modifier.fillMaxSize()) {
                     // Everything the floating nav bar blurs (background, lists, detail page) lives in
-                    // this box; it also feeds the bar's scroll-aware labels.
+                    // this box; in Auto mode it also feeds the bar's scroll-aware labels.
                     Box(
                         Modifier
                             .fillMaxSize()
                             .hazeSource(hazeState)
-                            .nestedScroll(navScroll.nestedScrollConnection)
+                            .then(
+                                if (navMode == NavMode.Auto) Modifier.nestedScroll(navScroll.nestedScrollConnection)
+                                else Modifier
+                            )
                     ) {
                         // The user's background image (blurred) or the plain dark colour.
                         AppBackground(backgroundImage, account)
@@ -270,12 +284,19 @@ fun Home(vm: PlayerViewModel, granted: Boolean, onGrant: () -> Unit, onOpenSetti
                                 query = query,
                                 scanning = scanning,
                                 showRefresh = searching || tab != HomeTab.Account,
+                                avatar = avatarImage,
+                                onAccountPage = tab == HomeTab.Account && !searching,
                                 onQuery = { query = it },
                                 onRefresh = vm::rescan,
+                                onAccount = {
+                                    detail = null
+                                    if (searching) toggleSearch()
+                                    tab = if (tab == HomeTab.Account) HomeTab.Songs else HomeTab.Account
+                                },
                             )
                             Box(Modifier.weight(1f).fillMaxWidth()) {
                                 when {
-                                    // The Account tab works without music access or a library.
+                                    // The Account page works without music access or a library.
                                     tab == HomeTab.Account && !(searching && q.isNotEmpty()) -> AccountScreen(
                                         vm = account,
                                         avatar = avatarImage,
@@ -458,8 +479,11 @@ private fun Header(
     query: String,
     scanning: Boolean,
     showRefresh: Boolean,
+    avatar: ImageBitmap?,
+    onAccountPage: Boolean,
     onQuery: (String) -> Unit,
     onRefresh: () -> Unit,
+    onAccount: () -> Unit,
 ) {
     Column(Modifier.padding(horizontal = 20.dp).padding(top = 8.dp, bottom = 8.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -472,6 +496,36 @@ private fun Header(
             if (showRefresh) {
                 FilledTonalIconButton(onClick = onRefresh) {
                     RefreshIcon(scanning)
+                }
+            }
+            // Account button in the top-right corner: shows the user's avatar.
+            Box(
+                Modifier
+                    .padding(start = 8.dp)
+                    .size(40.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.surfaceContainerHighest)
+                    .then(
+                        if (onAccountPage) Modifier.border(2.dp, MaterialTheme.colorScheme.primary, CircleShape)
+                        else Modifier
+                    )
+                    .clickable(onClick = onAccount),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (avatar != null) {
+                    Image(
+                        bitmap = avatar,
+                        contentDescription = "Account",
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop,
+                    )
+                } else {
+                    Icon(
+                        Icons.Filled.Person,
+                        contentDescription = "Account",
+                        modifier = Modifier.size(24.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
         }
@@ -528,6 +582,9 @@ private fun SearchField(query: String, onQuery: (String) -> Unit) {
  * the item list is remembered (it only changes when the selection does, so Home recomposing
  * no longer rebuilds the bar), and the accent colour fades in here, so only the bar
  * recomposes during the fade instead of the whole screen.
+ *
+ * The Account page is not a tab here (it lives behind the avatar button), so no item is
+ * highlighted while it is open.
  */
 @Composable
 private fun BottomBar(
@@ -541,7 +598,7 @@ private fun BottomBar(
     val latestOnTab by rememberUpdatedState(onTab)
     val latestOnSearch by rememberUpdatedState(onSearch)
     val items = remember(selected, searching) {
-        HomeTab.values().map { t ->
+        HomeTab.values().filter { it != HomeTab.Account }.map { t ->
             FloatingNavigationItem(
                 label = t.label,
                 selected = !searching && t == selected,
