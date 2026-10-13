@@ -35,6 +35,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Person
@@ -96,6 +97,7 @@ private sealed interface Dlg {
     data class SongMenu(val song: Song, val playlistId: String?) : Dlg
     data class Pick(val songs: List<Song>) : Dlg
     data class NewPlaylist(val songs: List<Song>) : Dlg
+    data class RenamePlaylist(val id: String, val name: String) : Dlg
 }
 
 private fun metaOf(list: List<Song>): String {
@@ -335,6 +337,9 @@ fun Home(vm: PlayerViewModel, granted: Boolean, onGrant: () -> Unit, onOpenSetti
                                             detail = null
                                         }
                                     },
+                                    onRename = data.playlistId?.let { id ->
+                                        { dialog = Dlg.RenamePlaylist(id, data.title) }
+                                    },
                                 )
                             }
                         }
@@ -387,7 +392,7 @@ fun Home(vm: PlayerViewModel, granted: Boolean, onGrant: () -> Unit, onOpenSetti
                         }
                     }
 
-                    // Bottom sheets: song menu, playlist picker, new playlist.
+                    // Bottom sheets: song menu, playlist picker, new / rename playlist.
                     dialog?.let { d ->
                         DialogHost(
                             dialog = d,
@@ -875,6 +880,7 @@ private fun DetailScreen(
     onAddAll: () -> Unit,
     onMenu: (Song) -> Unit,
     onDelete: (() -> Unit)?,
+    onRename: (() -> Unit)?,
 ) {
     val cover = data.songs.coverSong()
     val art = rememberArtwork(cover, cover?.artworkUrl, 640)
@@ -939,6 +945,11 @@ private fun DetailScreen(
                             Icon(Icons.Filled.Shuffle, contentDescription = null, modifier = Modifier.size(20.dp))
                             Spacer(Modifier.width(8.dp))
                             Text("Shuffle")
+                        }
+                        if (onRename != null) {
+                            FilledTonalIconButton(onClick = onRename, modifier = Modifier.size(52.dp)) {
+                                Icon(Icons.Filled.Edit, contentDescription = "Rename playlist")
+                            }
                         }
                         FilledTonalIconButton(
                             onClick = onDelete ?: onAddAll,
@@ -1013,6 +1024,14 @@ private fun DialogHost(
                     Spacer(Modifier.height(8.dp))
                     MenuItem("Add to playlist") { onSwitch(Dlg.Pick(listOf(dialog.song))) }
                     if (dialog.playlistId != null) {
+                        MenuItem("Move up in playlist") {
+                            vm.moveInPlaylist(dialog.playlistId, dialog.song.id, -1)
+                            onDismiss()
+                        }
+                        MenuItem("Move down in playlist") {
+                            vm.moveInPlaylist(dialog.playlistId, dialog.song.id, 1)
+                            onDismiss()
+                        }
                         MenuItem("Remove from this playlist", destructive = true) {
                             vm.removeFromPlaylist(dialog.playlistId, dialog.song.id)
                             onDismiss()
@@ -1038,6 +1057,7 @@ private fun DialogHost(
                     MenuItem("New playlist…") { onSwitch(Dlg.NewPlaylist(dialog.songs)) }
                 }
                 is Dlg.NewPlaylist -> NewPlaylistContent(dialog.songs, vm, onDismiss)
+                is Dlg.RenamePlaylist -> RenamePlaylistContent(dialog.id, dialog.name, vm, onDismiss)
             }
         }
     }
@@ -1087,5 +1107,38 @@ private fun NewPlaylistContent(songs: List<Song>, vm: PlayerViewModel, onDismiss
         modifier = Modifier.fillMaxWidth().height(52.dp),
     ) {
         Text("Create")
+    }
+}
+
+@Composable
+private fun RenamePlaylistContent(id: String, current: String, vm: PlayerViewModel, onDismiss: () -> Unit) {
+    var name by remember { mutableStateOf(current) }
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { focus.requestFocus() }
+
+    Text(
+        "Rename playlist",
+        style = MaterialTheme.typography.titleLarge,
+        fontWeight = FontWeight.Bold,
+    )
+    Spacer(Modifier.height(12.dp))
+    OutlinedTextField(
+        value = name,
+        onValueChange = { name = it },
+        singleLine = true,
+        label = { Text("Playlist name") },
+        shape = RoundedCornerShape(16.dp),
+        modifier = Modifier.fillMaxWidth().focusRequester(focus),
+    )
+    Spacer(Modifier.height(14.dp))
+    Button(
+        onClick = {
+            vm.renamePlaylist(id, name)
+            onDismiss()
+        },
+        enabled = name.isNotBlank(),
+        modifier = Modifier.fillMaxWidth().height(52.dp),
+    ) {
+        Text("Save")
     }
 }
