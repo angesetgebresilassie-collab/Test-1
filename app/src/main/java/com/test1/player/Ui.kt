@@ -32,6 +32,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
@@ -63,6 +64,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.*
+import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.rememberHazeState
@@ -74,6 +76,7 @@ private enum class HomeTab(val label: String, val icon: ImageVector) {
     Albums("Albums", Icons.Filled.Album),
     Artists("Artists", Icons.Filled.Person),
     Playlists("Playlists", Icons.Filled.QueueMusic),
+    Account("Account", Icons.Filled.AccountCircle),
 }
 
 private data class AlbumItem(val id: Long, val name: String, val artist: String, val songs: List<Song>)
@@ -164,10 +167,20 @@ fun Home(vm: PlayerViewModel, granted: Boolean, onGrant: () -> Unit, onOpenSetti
     // Small decode + off-main-thread colour extraction: changing song no longer stalls the UI.
     val art = rememberArtwork(st.current, st.metadata?.artworkUrl, 96)
     val accent = rememberArtAccent(art)
-    // The whole UI follows the colour of the track that is playing (blue when nothing is).
+
+    // Account tab: the user's avatar and background (blur is read inside AppBackground itself).
+    val account: AccountViewModel = viewModel()
+    val avatarPath by account.avatarPath.collectAsState()
+    val backgroundPath by account.backgroundPath.collectAsState()
+    val avatarImage = rememberFileImage(avatarPath, 512)
+    val backgroundImage = rememberFileImage(backgroundPath, 1600)
+    val backgroundAccent = rememberBackgroundAccent(backgroundImage)
+
+    // The whole UI follows the colour of the track that is playing. Until a song plays (or if its
+    // artwork is greyscale) it uses the colour of the user's background, then blue as a last resort.
     // Not animated here on purpose: animating it would recompose the entire screen every frame.
     // The nav bar and mini player fade the colour locally instead.
-    val accentColor = accent ?: LiquidBlue
+    val accentColor = accent ?: backgroundAccent ?: LiquidBlue
     val scheme = remember(accentColor) { musicScheme(accentColor) }
 
     var tab by remember { mutableStateOf(HomeTab.Songs) }
@@ -241,7 +254,8 @@ fun Home(vm: PlayerViewModel, granted: Boolean, onGrant: () -> Unit, onOpenSetti
                             .hazeSource(hazeState)
                             .nestedScroll(navScroll.nestedScrollConnection)
                     ) {
-                        Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background))
+                        // The user's background image (blurred) or the plain dark colour.
+                        AppBackground(backgroundImage, account)
 
                         // Main content (kept composed but hidden while a detail page is open, so scroll positions survive).
                         Column(
@@ -255,11 +269,19 @@ fun Home(vm: PlayerViewModel, granted: Boolean, onGrant: () -> Unit, onOpenSetti
                                 searching = searching,
                                 query = query,
                                 scanning = scanning,
+                                showRefresh = searching || tab != HomeTab.Account,
                                 onQuery = { query = it },
                                 onRefresh = vm::rescan,
                             )
                             Box(Modifier.weight(1f).fillMaxWidth()) {
                                 when {
+                                    // The Account tab works without music access or a library.
+                                    tab == HomeTab.Account && !(searching && q.isNotEmpty()) -> AccountScreen(
+                                        vm = account,
+                                        avatar = avatarImage,
+                                        background = backgroundImage,
+                                        bottomPad = bottomPad,
+                                    )
                                     !granted -> MessageCard(
                                         "Allow access to your music",
                                         "The player needs permission to read audio files on this device. Nothing leaves your phone.",
@@ -322,6 +344,8 @@ fun Home(vm: PlayerViewModel, granted: Boolean, onGrant: () -> Unit, onOpenSetti
                                                 onNew = { dialog = Dlg.NewPlaylist(emptyList()) },
                                                 onOpen = { detail = Detail.PlaylistD(it.id) },
                                             )
+                                            // Shown by the first branch of the `when` above.
+                                            HomeTab.Account -> Unit
                                         }
                                     }
                                 }
@@ -433,6 +457,7 @@ private fun Header(
     searching: Boolean,
     query: String,
     scanning: Boolean,
+    showRefresh: Boolean,
     onQuery: (String) -> Unit,
     onRefresh: () -> Unit,
 ) {
@@ -444,8 +469,10 @@ private fun Header(
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.weight(1f),
             )
-            FilledTonalIconButton(onClick = onRefresh) {
-                RefreshIcon(scanning)
+            if (showRefresh) {
+                FilledTonalIconButton(onClick = onRefresh) {
+                    RefreshIcon(scanning)
+                }
             }
         }
         AnimatedVisibility(visible = searching) {
