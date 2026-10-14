@@ -28,15 +28,19 @@ import androidx.compose.ui.draw.BlurredEdgeTreatment
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -198,21 +202,131 @@ fun rememberBackgroundAccent(background: ImageBitmap?): Color? {
 private fun Modifier.softBlur(blurDp: Float): Modifier =
     if (blurDp >= 0.5f) blur(blurDp.dp, BlurredEdgeTreatment.Unbounded) else this
 
+// ---------------------------------------------------------------------------------------------
+// Pre-blurred background
+//
+// Modifier.blur on a full-screen image makes the GPU redo the blur on every frame that anything
+// above or around it changes, and the whole screen is the blur source for the nav bar, so it
+// would be redone on every scroll frame. Instead the blur is computed once on a small copy of
+// the image (a background thread, only when the image or slider changes) and drawn as a plain
+// image, which costs next to nothing per frame.
+// ---------------------------------------------------------------------------------------------
+
+private const val BLUR_BASE_PX = 480
+
+private fun makeBlurBase(src: ImageBitmap): Bitmap {
+    val bmp = src.asAndroidBitmap()
+    val soft = if (bmp.config == Bitmap.Config.HARDWARE) bmp.copy(Bitmap.Config.ARGB_8888, false) else bmp
+    val longest = maxOf(soft.width, soft.height)
+    val scale = BLUR_BASE_PX.toFloat() / longest
+    return if (scale < 1f) {
+        Bitmap.createScaledBitmap(
+            soft,
+            (soft.width * scale).toInt().coerceAtLeast(1),
+            (soft.height * scale).toInt().coerceAtLeast(1),
+            true,
+        )
+    } else {
+        soft
+    }
+}
+
+/** One horizontal + vertical running-sum box blur pass over a single colour channel. */
+private fun boxBlurChannel(a: IntArray, w: Int, h: Int, r: Int) {
+    if (r < 1) return
+    val tmp = IntArray(maxOf(w, h))
+    val div = 2 * r + 1
+    for (y in 0 until h) {
+        val row = y * w
+        var sum = 0
+        for (i in -r..r) sum += a[row + i.coerceIn(0, w - 1)]
+        for (x in 0 until w) {
+            tmp[x] = sum / div
+            val add = (x + r + 1).coerceAtMost(w - 1)
+            val sub = (x - r).coerceAtLeast(0)
+            sum += a[row + add] - a[row + sub]
+        }
+        for (x in 0 until w) a[row + x] = tmp[x]
+    }
+    for (x in 0 until w) {
+        var sum = 0
+        for (i in -r..r) sum += a[i.coerceIn(0, h - 1) * w + x]
+        for (y in 0 until h) {
+            tmp[y] = sum / div
+            val add = (y + r + 1).coerceAtMost(h - 1)
+            val sub = (y - r).coerceAtLeast(0)
+            sum += a[add * w + x] - a[sub * w + x]
+        }
+        for (y in 0 until h) a[y * w + x] = tmp[y]
+    }
+}
+
+/** Three box-blur passes approximate a Gaussian blur well. */
+private fun boxBlur(src: Bitmap, radius: Int): Bitmap {
+    val w = src.width
+    val h = src.height
+    val px = IntArray(w * h)
+    src.getPixels(px, 0, w, 0, 0, w, h)
+    val r = IntArray(w * h) { (px[it] shr 16) and 0xFF }
+    val g = IntArray(w * h) { (px[it] shr 8) and 0xFF }
+    val b = IntArray(w * h) { px[it] and 0xFF }
+    repeat(3) {
+        boxBlurChannel(r, w, h, radius)
+        boxBlurChannel(g, w, h, radius)
+        boxBlurChannel(b, w, h, radius)
+    }
+    for (i in px.indices) {
+        px[i] = (0xFF shl 24) or
+            (r[i].coerceIn(0, 255) shl 16) or
+            (g[i].coerceIn(0, 255) shl 8) or
+            b[i].coerceIn(0, 255)
+    }
+    val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+    out.setPixels(px, 0, w, 0, 0, w, h)
+    return out
+}
+
+/**
+ * The background as it should be drawn: the blurred copy for the chosen blur, or the sharp image
+ * when blur is ~0. While a new blur is being computed the previous one stays on screen.
+ */
+@Composable
+private fun rememberBlurredBackground(source: ImageBitmap?, blurDp: Float, density: Float): ImageBitmap? {
+    val base by produceState<Bitmap?>(initialValue = null, source) {
+        value = if (source == null) null else withContext(Dispatchers.Default) { makeBlurBase(source) }
+    }
+    val blurred by produceState<ImageBitmap?>(initialValue = null, base, blurDp, density) {
+        val b = base
+        if (b == null || blurDp < 0.5f) {
+            value = null
+        } else {
+            delay(40) // dragging the slider restarts this, so only the settled value is computed
+            val ratio = maxOf(b.width, b.height) / 2400f // the copy is much smaller than the screen
+            val radius = (blurDp * density * ratio).toInt().coerceAtLeast(1)
+            value = withContext(Dispatchers.Default) { boxBlur(b, radius).asImageBitmap() }
+        }
+    }
+    return if (blurDp < 0.5f) source else blurred
+}
+
 /**
  * The app-wide background: the user's image blurred by the chosen amount under a dark scrim, or
  * the plain dark colour when none is set. Reads the blur itself, so dragging the slider only
- * redraws this layer. (Compose can only blur on Android 12+; older phones show it sharp.)
+ * redraws this layer.
  */
 @Composable
 fun AppBackground(bitmap: ImageBitmap?, account: AccountViewModel) {
     val blur by account.blurDp.collectAsState()
+    val density = LocalDensity.current.density
+    val shown = rememberBlurredBackground(bitmap, blur, density)
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-        if (bitmap != null) {
+        if (shown != null) {
             Image(
-                bitmap = bitmap,
+                bitmap = shown,
                 contentDescription = null,
-                modifier = Modifier.fillMaxSize().softBlur(blur),
+                modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop,
+                filterQuality = FilterQuality.High,
             )
             Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.45f)))
         }
