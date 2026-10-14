@@ -55,7 +55,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
@@ -72,7 +74,11 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.rememberHazeState
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.sample
 
 private enum class HomeTab(val label: String, val icon: ImageVector) {
@@ -94,6 +100,18 @@ private data class DetailData(
     val playlistId: String?,
     val numbered: Boolean,
 )
+
+/** The whole library as the lists show it, built on a background thread (see Home). */
+private data class Library(
+    val songs: List<Song>,
+    val albums: List<AlbumItem>,
+    val artists: List<ArtistItem>,
+    val songById: Map<Long, Song>,
+) {
+    companion object {
+        val Empty = Library(emptyList(), emptyList(), emptyList(), emptyMap())
+    }
+}
 
 private sealed interface Detail {
     data class AlbumD(val id: Long) : Detail
@@ -146,25 +164,43 @@ private fun musicScheme(accent: Color): ColorScheme {
 @Composable
 fun Home(vm: PlayerViewModel, granted: Boolean, onGrant: () -> Unit, onOpenSettings: () -> Unit) {
     val rawSongs by vm.songs.collectAsState()
-    // The background lookup publishes a new map every couple of seconds; sampling it keeps the
-    // lists from being rebuilt and recomposed on every single result while you scroll.
-    val found by remember(vm) { vm.found.sample(1200) }.collectAsState(initial = vm.found.value)
     val st by vm.state.collectAsState()
     val playlists by vm.playlists.collectAsState()
     val loaded by vm.loaded.collectAsState()
     val scanning by vm.scanning.collectAsState()
 
-    // Songs as shown in the lists: title / artist / artwork from the file-name lookup once it arrives.
-    val songs = remember(rawSongs, found) {
-        rawSongs.map { s ->
-            val m = found[s.id]
-            if (m == null) s else s.copy(
-                title = m.title.ifBlank { s.title },
-                artist = m.artist.ifBlank { s.artist },
-                artworkUrl = m.artworkUrl,
-            )
-        }
+    // Songs as shown in the lists (title / artist / artwork from the file-name lookup once it
+    // arrives), plus the album and artist groupings. This is a lot of mapping, grouping and
+    // sorting on a big library, and the lookup publishes new results every couple of seconds, so it
+    // runs on a background thread and sampling keeps it from re-running on every single result.
+    // Doing it on the main thread was a source of stutter while scrolling during the lookup.
+    val libraryFlow = remember(vm) {
+        combine(
+            vm.songs,
+            vm.found.sample(1500).onStart { emit(vm.found.value) },
+        ) { raw, found ->
+            val songs = raw.map { s ->
+                val m = found[s.id]
+                if (m == null) s else s.copy(
+                    title = m.title.ifBlank { s.title },
+                    artist = m.artist.ifBlank { s.artist },
+                    artworkUrl = m.artworkUrl,
+                )
+            }
+            val albums = songs.groupBy { it.albumId }.map { (id, list) ->
+                AlbumItem(id, list.first().album, list.first().artist, list.sortedBy { it.track % 1000 })
+            }.sortedBy { it.name.lowercase() }
+            val artists = songs.groupBy { it.artist }
+                .map { (name, list) -> ArtistItem(name, list) }
+                .sortedBy { it.name.lowercase() }
+            Library(songs, albums, artists, songs.associateBy { it.id })
+        }.flowOn(Dispatchers.Default)
     }
+    val library by libraryFlow.collectAsState(initial = Library.Empty)
+    val songs = library.songs
+    val albums = library.albums
+    val artists = library.artists
+    val songById = library.songById
 
     // Blur source for the floating nav bar, and its scroll-aware label state.
     val hazeState = rememberHazeState()
@@ -206,15 +242,6 @@ fun Home(vm: PlayerViewModel, granted: Boolean, onGrant: () -> Unit, onOpenSetti
     st.current?.let { lastSong.value = it }
 
     val q = query.trim()
-    val albums = remember(songs) {
-        songs.groupBy { it.albumId }.map { (id, list) ->
-            AlbumItem(id, list.first().album, list.first().artist, list.sortedBy { it.track % 1000 })
-        }.sortedBy { it.name.lowercase() }
-    }
-    val artists = remember(songs) {
-        songs.groupBy { it.artist }.map { (name, list) -> ArtistItem(name, list) }.sortedBy { it.name.lowercase() }
-    }
-    val songById = remember(songs) { songs.associateBy { it.id } }
 
     val shownSongs = remember(songs, q) {
         if (q.isEmpty()) songs
@@ -268,7 +295,7 @@ fun Home(vm: PlayerViewModel, granted: Boolean, onGrant: () -> Unit, onOpenSetti
                                 else Modifier
                             )
                     ) {
-                        // The user's background image (blurred) or the plain dark colour.
+                        // The user's background image (pre-blurred) or the plain dark colour.
                         AppBackground(backgroundImage, account)
 
                         // Main content (kept composed but hidden while a detail page is open, so scroll positions survive).
@@ -314,7 +341,9 @@ fun Home(vm: PlayerViewModel, granted: Boolean, onGrant: () -> Unit, onOpenSetti
                                             Text("Open app settings")
                                         }
                                     }
-                                    !loaded || (scanning && songs.isEmpty()) -> MessageCard(
+                                    // Also covers the moment between the songs loading and the
+                                    // background thread finishing the lists (songs still empty).
+                                    !loaded || (scanning && songs.isEmpty()) || (songs.isEmpty() && rawSongs.isNotEmpty()) -> MessageCard(
                                         "Looking for your music…",
                                         "Reading your device's media library.",
                                     ) {
@@ -673,7 +702,12 @@ private fun EmptyHint(text: String) {
 // Shared pieces: grid card, list row
 // ---------------------------------------------------------------------------------------------
 
-/** Material card for grids: square artwork on top, title and subtitle underneath. */
+/**
+ * Music card: the artwork fills the whole card, with a frosted (blurred) strip along the bottom
+ * behind the title and artist so the text stays readable on any cover. The blur is pre-computed
+ * once per cover (see ArtStrip.kt) instead of being a live blur, so it costs nothing per frame
+ * while scrolling.
+ */
 @Composable
 private fun MediaCard(
     art: ImageBitmap?,
@@ -690,16 +724,66 @@ private fun MediaCard(
         animationSpec = tween(250),
         label = "card_border",
     )
+    val strip = rememberArtStrip(art)
     Card(
         onClick = onClick,
         interactionSource = source,
-        modifier = Modifier.fillMaxWidth().pressScale(source, 0.95f),
-        shape = RoundedCornerShape(20.dp),
+        modifier = Modifier.fillMaxWidth().aspectRatio(0.8f).pressScale(source, 0.95f),
+        shape = RoundedCornerShape(24.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
         border = if (borderColor.alpha > 0.01f) BorderStroke(2.dp, borderColor) else null,
     ) {
-        Box {
-            ArtworkBox(art, Modifier.fillMaxWidth().aspectRatio(1f), 0.dp)
+        Box(Modifier.fillMaxSize()) {
+            ArtworkBox(art, Modifier.fillMaxSize(), 0.dp)
+
+            // Frosted strip + dark fade + text.
+            Box(
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .fillMaxHeight(STRIP_FRACTION)
+            ) {
+                if (strip != null) {
+                    Image(
+                        bitmap = strip,
+                        contentDescription = null,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.FillBounds,
+                        filterQuality = FilterQuality.High,
+                    )
+                }
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(
+                            Brush.verticalGradient(
+                                listOf(Color.Transparent, Color.Black.copy(alpha = 0.60f))
+                            )
+                        )
+                )
+                Column(
+                    Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(horizontal = 14.dp, vertical = 12.dp)
+                ) {
+                    Text(
+                        title,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        color = Color.White,
+                    )
+                    Text(
+                        subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.White.copy(alpha = 0.78f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+
             if (onMenu != null) {
                 Box(
                     Modifier
@@ -719,23 +803,6 @@ private fun MediaCard(
                     )
                 }
             }
-        }
-        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
-            Text(
-                title,
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                color = if (highlighted) primary else Color.Unspecified,
-            )
-            Text(
-                subtitle,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
         }
     }
 }
