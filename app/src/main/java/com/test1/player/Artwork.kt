@@ -17,6 +17,8 @@ import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.net.URL
@@ -28,6 +30,10 @@ import java.net.URL
  *
  * Bitmaps are decoded at the size the caller needs (`maxPx`, 0 = original) and the memory cache
  * is limited by bytes, so list rows no longer hold full-size covers.
+ *
+ * Scrolling: decoding and downloading are limited to a few at a time (the gates below). A card
+ * that scrolls away while it is still waiting for its turn is cancelled and never runs, so a fast
+ * fling no longer starts dozens of decodes at once and competes with the UI thread for CPU.
  */
 object ArtworkLoader {
     private val memory = object : LruCache<String, ImageBitmap>(
@@ -36,6 +42,9 @@ object ArtworkLoader {
         override fun sizeOf(key: String, value: ImageBitmap): Int =
             runCatching { value.asAndroidBitmap().byteCount }.getOrDefault(1_000_000)
     }
+
+    private val decodeGate = Semaphore(3)
+    private val netGate = Semaphore(4)
 
     private fun diskKey(song: Song, remoteUrl: String?): String =
         song.id.toString() + (remoteUrl?.takeIf { it.isNotBlank() }?.let { "-" + it.hashCode() } ?: "")
@@ -47,16 +56,20 @@ object ArtworkLoader {
     fun peek(song: Song, remoteUrl: String?, maxPx: Int): ImageBitmap? =
         memory.get(memKey(song, remoteUrl, maxPx))
 
-    suspend fun load(context: Context, song: Song, remoteUrl: String?, maxPx: Int = 0): ImageBitmap? =
-        withContext(Dispatchers.IO) {
-            val mKey = memKey(song, remoteUrl, maxPx)
-            memory.get(mKey)?.let { return@withContext it }
-            val key = diskKey(song, remoteUrl)
-            val bitmap = fromDisk(context, key, maxPx)
-                ?: fromRemote(context, key, remoteUrl, maxPx)
-                ?: fromLocal(context, song, maxPx)
-            bitmap?.asImageBitmap()?.also { memory.put(mKey, it) }
-        }
+    suspend fun load(context: Context, song: Song, remoteUrl: String?, maxPx: Int = 0): ImageBitmap? {
+        val mKey = memKey(song, remoteUrl, maxPx)
+        memory.get(mKey)?.let { return it }
+        val key = diskKey(song, remoteUrl)
+
+        val bitmap: Bitmap? =
+            decodeGate.withPermit { withContext(Dispatchers.IO) { fromDisk(context, key, maxPx) } }
+                ?: remoteUrl?.takeIf { it.isNotBlank() }?.let { url ->
+                    netGate.withPermit { withContext(Dispatchers.IO) { fromRemote(context, key, url, maxPx) } }
+                }
+                ?: decodeGate.withPermit { withContext(Dispatchers.IO) { fromLocal(context, song, maxPx) } }
+
+        return bitmap?.asImageBitmap()?.also { memory.put(mKey, it) }
+    }
 
     private fun dir(context: Context): File =
         File(context.filesDir, "artwork").apply { mkdirs() }
@@ -69,14 +82,17 @@ object ArtworkLoader {
     private fun fromDisk(context: Context, key: String, maxPx: Int): Bitmap? =
         File(dir(context), "$key.jpg").takeIf { it.exists() }?.let { decodeFile(it.path, maxPx) }
 
-    private fun fromRemote(context: Context, key: String, url: String?, maxPx: Int): Bitmap? {
-        if (url.isNullOrBlank()) return null
-        return runCatching {
-            val bytes = URL(url).openStream().use { it.readBytes() }
+    private fun fromRemote(context: Context, key: String, url: String, maxPx: Int): Bitmap? =
+        runCatching {
+            // Timeouts: a stalled connection must not hold a download slot forever.
+            val connection = URL(url).openConnection().apply {
+                connectTimeout = 8_000
+                readTimeout = 8_000
+            }
+            val bytes = connection.getInputStream().use { it.readBytes() }
             File(dir(context), "$key.jpg").writeBytes(bytes)
             decodeBytes(bytes, maxPx)
         }.getOrNull()
-    }
 
     /** Largest power-of-two shrink that still leaves the longest side >= [maxPx]. */
     private fun sampleSize(width: Int, height: Int, maxPx: Int): Int {
@@ -108,18 +124,29 @@ object ArtworkLoader {
     }
 }
 
-/** [maxPx]: longest side the artwork is shown at, in pixels (0 = full size). */
+/**
+ * [maxPx]: longest side the artwork is shown at, in pixels (0 = full size).
+ *
+ * When only [remoteUrl] changes (the background lookup found better art for this song), the
+ * cover that is already showing stays on screen until the new one is ready, instead of blanking
+ * and reloading, which used to make cards flash while scrolling during the lookup.
+ */
 @Composable
 fun rememberArtwork(song: Song?, remoteUrl: String?, maxPx: Int = 0): ImageBitmap? {
     val context = LocalContext.current.applicationContext
-    var bitmap by remember(song?.id, remoteUrl, maxPx) {
+    var bitmap by remember(song?.id, maxPx) {
         mutableStateOf(if (song == null) null else ArtworkLoader.peek(song, remoteUrl, maxPx))
     }
     LaunchedEffect(song?.id, remoteUrl, maxPx) {
         if (song == null) {
             bitmap = null
-        } else if (bitmap == null) {
-            bitmap = ArtworkLoader.load(context, song, remoteUrl, maxPx)
+        } else {
+            val cached = ArtworkLoader.peek(song, remoteUrl, maxPx)
+            if (cached != null) {
+                bitmap = cached
+            } else {
+                ArtworkLoader.load(context, song, remoteUrl, maxPx)?.let { bitmap = it }
+            }
         }
     }
     return bitmap
