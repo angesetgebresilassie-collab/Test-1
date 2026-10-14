@@ -13,6 +13,8 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.LocalTextStyle
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -22,9 +24,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -102,6 +107,10 @@ private fun wordProgress(word: LyricWord, pos: Long): Float {
     return t * t * (3f - 2f * t)
 }
 
+/**
+ * The lyrics are coloured from the artwork: the theme's primary colour is the vivid accent taken
+ * from the playing track's cover, so every lyric colour below is a tint of that accent.
+ */
 @Composable
 fun LyricsView(
     modifier: Modifier,
@@ -112,16 +121,19 @@ fun LyricsView(
 ) {
     when {
         lines.isNotEmpty() -> SyncedLyrics(modifier, lines, pos, onSeek)
-        !plain.isNullOrBlank() -> Column(
-            modifier.verticalScroll(rememberScrollState()).padding(vertical = 24.dp)
-        ) {
-            Text(
-                plain,
-                fontSize = 22.sp,
-                lineHeight = 32.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = Color.White.copy(alpha = 0.85f),
-            )
+        !plain.isNullOrBlank() -> {
+            val accent = MaterialTheme.colorScheme.primary
+            Column(
+                modifier.verticalScroll(rememberScrollState()).padding(vertical = 24.dp)
+            ) {
+                Text(
+                    plain,
+                    fontSize = 22.sp,
+                    lineHeight = 32.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = lerp(accent, Color.White, 0.45f).copy(alpha = 0.92f),
+                )
+            }
         }
         else -> Box(modifier, contentAlignment = Alignment.Center) {
             Text("No lyrics found", color = Color.White.copy(alpha = 0.6f))
@@ -172,13 +184,20 @@ private fun SyncedLyrics(
 /** relation: <0 already sung, 0 active, >0 upcoming */
 @Composable
 private fun SyncedLine(line: LyricLine, relation: Int, pos: LongState, onClick: () -> Unit) {
+    val accent = MaterialTheme.colorScheme.primary
+    // Tints of the artwork accent: near-white-with-a-hint for the line being sung, a softer tint
+    // for everything else, plus a faint glow in the accent colour behind the active line.
+    val bright = remember(accent) { lerp(accent, Color.White, 0.62f) }
+    val soft = remember(accent) { lerp(accent, Color.White, 0.28f) }
+    val glow = remember(accent) { Shadow(color = accent.copy(alpha = 0.6f), offset = Offset.Zero, blurRadius = 30f) }
+
     val active = relation == 0
     val scale by animateFloatAsState(if (active) 1f else 0.92f, tween(400), label = "lineScale")
     val baseAlpha by animateFloatAsState(
         when {
             active -> 1f
-            relation < 0 -> 0.45f
-            else -> 0.32f
+            relation < 0 -> 0.5f
+            else -> 0.36f
         },
         tween(400),
         label = "lineAlpha",
@@ -188,7 +207,8 @@ private fun SyncedLine(line: LyricLine, relation: Int, pos: LongState, onClick: 
         buildAnnotatedString {
             line.words.forEachIndexed { i, w ->
                 val progress = wordProgress(w, p)
-                withStyle(SpanStyle(color = Color.White.copy(alpha = 0.38f + 0.62f * progress))) {
+                // Each word fades from a dim tint to the bright tint as it is sung.
+                withStyle(SpanStyle(color = lerp(soft.copy(alpha = 0.38f), bright, progress))) {
                     append(w.text)
                 }
                 if (i < line.words.lastIndex) append(" ")
@@ -202,7 +222,8 @@ private fun SyncedLine(line: LyricLine, relation: Int, pos: LongState, onClick: 
         fontSize = 30.sp,
         lineHeight = 38.sp,
         fontWeight = FontWeight.Bold,
-        color = Color.White.copy(alpha = baseAlpha),
+        color = soft.copy(alpha = baseAlpha),
+        style = if (active) LocalTextStyle.current.copy(shadow = glow) else LocalTextStyle.current,
         modifier = Modifier
             .fillMaxWidth()
             .graphicsLayer {
