@@ -9,13 +9,23 @@ import java.net.URL
 import java.net.URLEncoder
 import java.text.Normalizer
 
+private class HttpError(val code: Int) : Exception("HTTP $code")
+
+/** Tracks whether a lyrics lookup hit a real failure (offline, 5xx, 429) as opposed to a plain "not found". */
+private class Lookup {
+    var failed = false
+}
+
 /**
  * Metadata is looked up from the song's FILE NAME (embedded tags can be misleading).
  * Matching is word-based and order-independent, so "Artist - Title", "Title - Artist" and
  * names with no artist at all still find the right song, while unrelated results are rejected.
+ *
+ * Lyrics are cached on disk per song (see [LyricsCache]): once found they never hit the network
+ * again, and a confirmed miss is not retried for a few days.
  */
 class MetadataRepository(private val cache: MetadataCache) {
-    private val retried = mutableSetOf<Long>()
+    private val lyricsCache get() = cache.lyrics
 
     private fun fullName(song: Song): String {
         val parsed = FileNames.parse(song.fileName.ifBlank { song.title })
@@ -41,26 +51,48 @@ class MetadataRepository(private val cache: MetadataCache) {
         val parsed = FileNames.parse(song.fileName.ifBlank { song.title })
         val full = listOfNotNull(parsed.artist, parsed.title).joinToString(" ")
 
-        cache.get(song.id)?.let { cached ->
-            // Cached without any lyrics: try once more per session (maybe it was offline).
-            if (cached.lyrics != null || cached.synced != null || !retried.add(song.id)) {
-                return@withContext cached
-            }
-            val found = runCatching { lyrics(cached.artist, cached.title, full, durationSec) }.getOrNull()
-                ?: return@withContext cached
-            return@withContext cached.copy(lyrics = found.first, synced = found.second)
-                .also { cache.put(song.id, it) }
+        // ---- title / artist / artwork ----
+        val saved = cache.get(song.id)
+        val matched: Boolean
+        val base: CachedMetadata
+        if (saved != null) {
+            matched = true
+            base = saved
+        } else {
+            val i = runCatching { itunes(full) }.getOrNull()
+            matched = i != null
+            base = CachedMetadata(
+                i?.title?.takeIf { it.isNotBlank() } ?: parsed.title,
+                i?.artist?.takeIf { it.isNotBlank() } ?: parsed.artist ?: song.artist,
+                i?.album?.takeIf { it.isNotBlank() } ?: song.album,
+                i?.artworkUrl,
+                null,
+                null,
+            )
+            // Only cache a real match, so unmatched / offline songs are looked up again next time.
+            if (matched) cache.put(song.id, base)
         }
 
-        val i = runCatching { itunes(full) }.getOrNull()
-        val title = i?.title?.takeIf { it.isNotBlank() } ?: parsed.title
-        val artist = i?.artist?.takeIf { it.isNotBlank() } ?: parsed.artist ?: song.artist
-        val album = i?.album?.takeIf { it.isNotBlank() } ?: song.album
-        val found = runCatching { lyrics(i?.artist ?: parsed.artist, title, full, durationSec) }.getOrNull()
-        val result = CachedMetadata(title, artist, album, i?.artworkUrl, found?.first, found?.second)
-        // Only cache a real match, so unmatched / offline songs are looked up again next time.
-        if (i != null) cache.put(song.id, result)
-        result
+        // ---- lyrics (own cache, independent of the iTunes match) ----
+        var entry = lyricsCache.get(song.id)
+        if (entry == null && saved != null && (saved.lyrics != null || saved.synced != null)) {
+            // Older versions stored lyrics inside the metadata cache: move them over.
+            entry = lyricsCache.put(song.id, saved.lyrics, saved.synced)
+        }
+        if (entry == null || !entry.fresh()) {
+            val st = Lookup()
+            val artist = if (matched) base.artist else parsed.artist
+            val found = runCatching { lyrics(artist, base.title, full, durationSec, st) }
+                .getOrElse { st.failed = true; null }
+            if (found != null) {
+                entry = lyricsCache.put(song.id, found.first, found.second)
+            } else if (!st.failed) {
+                // Searched properly and nothing exists: do not search again on every play.
+                entry = lyricsCache.putMiss(song.id)
+            }
+            // else: offline / server trouble - save nothing so it is retried next time.
+        }
+        base.copy(lyrics = entry?.plain, synced = entry?.synced)
     }
 
     // ---- word-overlap matching ----
@@ -115,17 +147,36 @@ class MetadataRepository(private val cache: MetadataCache) {
         )
     }
 
+    /** GET that returns null for a plain 404 (not found) and flags [st] for any real failure. */
+    private fun fetch(u: String, st: Lookup): String? = try {
+        get(u)
+    } catch (e: HttpError) {
+        if (e.code != 404) st.failed = true
+        null
+    } catch (e: Exception) {
+        st.failed = true
+        null
+    }
+
     /** Returns (plain, synced) or null when nothing was found. */
-    private fun lyrics(artist: String?, title: String, full: String, durationSec: Long): Pair<String?, String?>? {
+    private fun lyrics(
+        artist: String?,
+        title: String,
+        full: String,
+        durationSec: Long,
+        st: Lookup,
+    ): Pair<String?, String?>? {
         val a = artist?.takeUnless { it.isBlank() || it.equals("Unknown artist", ignoreCase = true) }
         if (a != null) {
             val q = "artist_name=" + URLEncoder.encode(a, "UTF-8") +
                 "&track_name=" + URLEncoder.encode(title, "UTF-8")
             for (u in listOf("https://lrclib.net/api/get?$q&duration=$durationSec", "https://lrclib.net/api/get?$q")) {
-                val r = runCatching { parseLyrics(JSONObject(get(u))) }.getOrNull()
+                val body = fetch(u, st) ?: continue
+                val r = runCatching { parseLyrics(JSONObject(body)) }.getOrNull()
                 if (r != null) return r
             }
-            val arr = runCatching { JSONArray(get("https://lrclib.net/api/search?$q")) }.getOrNull()
+            val arr = fetch("https://lrclib.net/api/search?$q", st)
+                ?.let { runCatching { JSONArray(it) }.getOrNull() }
             if (arr != null) {
                 var plainOnly: Pair<String?, String?>? = null
                 for (k in 0 until arr.length()) {
@@ -136,15 +187,14 @@ class MetadataRepository(private val cache: MetadataCache) {
                 if (plainOnly != null) return plainOnly
             }
         }
-        return lyricsByText(full.ifBlank { title })
+        return lyricsByText(full.ifBlank { title }, st)
     }
 
     /** Free-text lyrics search on the file name (works when there is no artist or the order is swapped). */
-    private fun lyricsByText(full: String): Pair<String?, String?>? {
+    private fun lyricsByText(full: String, st: Lookup): Pair<String?, String?>? {
         val want = fileTokens(full)
-        val arr = runCatching {
-            JSONArray(get("https://lrclib.net/api/search?q=" + URLEncoder.encode(full, "UTF-8")))
-        }.getOrNull() ?: return null
+        val arr = fetch("https://lrclib.net/api/search?q=" + URLEncoder.encode(full, "UTF-8"), st)
+            ?.let { runCatching { JSONArray(it) }.getOrNull() } ?: return null
         var plainOnly: Pair<String?, String?>? = null
         for (k in 0 until arr.length()) {
             val o = arr.getJSONObject(k)
@@ -173,7 +223,7 @@ class MetadataRepository(private val cache: MetadataCache) {
         c.readTimeout = 8000
         c.setRequestProperty("User-Agent", "Test1Player/0.2")
         return try {
-            if (c.responseCode !in 200..299) throw IllegalStateException("HTTP " + c.responseCode)
+            if (c.responseCode !in 200..299) throw HttpError(c.responseCode)
             c.inputStream.bufferedReader().use { it.readText() }
         } finally {
             c.disconnect()
