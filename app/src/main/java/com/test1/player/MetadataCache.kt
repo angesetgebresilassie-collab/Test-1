@@ -3,6 +3,8 @@ import android.content.Context
 import org.json.JSONObject
 
 class MetadataCache(context: Context) {
+ /** Lyrics live in their own on-disk cache (one file per song), not in these preferences. */
+ val lyrics = LyricsCache(context)
  private val p=context.getSharedPreferences("metadata_cache",0)
  // v4: entries made before the order-independent file-name matching are stale and get re-fetched.
  fun get(id:Long):CachedMetadata?=p.getString(id.toString(),null)?.let{runCatching{
