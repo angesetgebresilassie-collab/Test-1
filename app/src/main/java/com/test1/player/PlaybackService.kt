@@ -1,11 +1,16 @@
 package com.test1.player
 
+import android.net.Uri
 import android.os.Bundle
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.CommandButton
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
@@ -14,6 +19,7 @@ import androidx.media3.session.SessionResult
 import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
+import java.io.IOException
 
 @UnstableApi
 class PlaybackService : MediaSessionService() {
@@ -59,7 +65,27 @@ class PlaybackService : MediaSessionService() {
     override fun onCreate() {
         super.onCreate()
 
+        // Local files and http(s) play as usual. Streamed songs carry a ytstream:// URI that is
+        // turned into a real audio URL (via NewPipe) at the moment ExoPlayer opens it. This runs
+        // on the loading thread, so the blocking lookup is fine, and an expired URL is simply
+        // resolved again on the next open.
+        val http = DefaultHttpDataSource.Factory()
+            .setUserAgent(NewPipeSupport.USER_AGENT)
+            .setAllowCrossProtocolRedirects(true)
+        val resolving = ResolvingDataSource.Factory(
+            DefaultDataSource.Factory(this, http),
+            ResolvingDataSource.Resolver { spec ->
+                if (spec.uri.scheme == NewPipeSupport.SCHEME) {
+                    val id = spec.uri.lastPathSegment ?: throw IOException("Bad stream id")
+                    spec.withUri(Uri.parse(NewPipeSupport.streamUrl(id)))
+                } else {
+                    spec
+                }
+            },
+        )
+
         val exoPlayer = ExoPlayer.Builder(this)
+            .setMediaSourceFactory(DefaultMediaSourceFactory(resolving))
             .setAudioAttributes(
                 AudioAttributes.Builder()
                     .setUsage(C.USAGE_MEDIA)
