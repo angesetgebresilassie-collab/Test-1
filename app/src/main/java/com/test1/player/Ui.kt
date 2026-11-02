@@ -168,6 +168,7 @@ fun Home(vm: PlayerViewModel, granted: Boolean, onGrant: () -> Unit, onOpenSetti
     val playlists by vm.playlists.collectAsState()
     val loaded by vm.loaded.collectAsState()
     val scanning by vm.scanning.collectAsState()
+    val online by vm.online.collectAsState()
 
     // Songs as shown in the lists (title / artist / artwork from the file-name lookup once it
     // arrives), plus the album and artist groupings. This is a lot of mapping, grouping and
@@ -242,6 +243,9 @@ fun Home(vm: PlayerViewModel, granted: Boolean, onGrant: () -> Unit, onOpenSetti
     st.current?.let { lastSong.value = it }
 
     val q = query.trim()
+
+    // Streamed songs (NewPipe) are searched while the search page is open; leaving it clears them.
+    LaunchedEffect(q, searching) { vm.searchOnline(if (searching) q else "") }
 
     val shownSongs = remember(songs, q) {
         if (q.isEmpty()) songs
@@ -330,6 +334,24 @@ fun Home(vm: PlayerViewModel, granted: Boolean, onGrant: () -> Unit, onOpenSetti
                                         background = backgroundImage,
                                         bottomPad = bottomPad,
                                     )
+                                    // Search comes before the library checks so streamed results
+                                    // also work with an empty library or without music access.
+                                    searching && q.isNotEmpty() -> SearchResults(
+                                        query = q,
+                                        songs = shownSongs,
+                                        online = online,
+                                        albums = shownAlbums,
+                                        artists = shownArtists,
+                                        playlists = shownPlaylists,
+                                        songById = songById,
+                                        st = st,
+                                        bottomPad = bottomPad,
+                                        onPlay = { vm.play(it, if (it.isStreamed) online else shownSongs) },
+                                        onMenu = { dialog = Dlg.SongMenu(it, null) },
+                                        onAlbum = { detail = Detail.AlbumD(it.id) },
+                                        onArtist = { detail = Detail.ArtistD(it.name) },
+                                        onPlaylist = { detail = Detail.PlaylistD(it.id) },
+                                    )
                                     !granted -> MessageCard(
                                         "Allow access to your music",
                                         "The player needs permission to read audio files on this device. Nothing leaves your phone.",
@@ -359,21 +381,6 @@ fun Home(vm: PlayerViewModel, granted: Boolean, onGrant: () -> Unit, onOpenSetti
                                             Text("Rescan storage")
                                         }
                                     }
-                                    searching && q.isNotEmpty() -> SearchResults(
-                                        query = q,
-                                        songs = shownSongs,
-                                        albums = shownAlbums,
-                                        artists = shownArtists,
-                                        playlists = shownPlaylists,
-                                        songById = songById,
-                                        st = st,
-                                        bottomPad = bottomPad,
-                                        onPlay = { vm.play(it, shownSongs) },
-                                        onMenu = { dialog = Dlg.SongMenu(it, null) },
-                                        onAlbum = { detail = Detail.AlbumD(it.id) },
-                                        onArtist = { detail = Detail.ArtistD(it.name) },
-                                        onPlaylist = { detail = Detail.PlaylistD(it.id) },
-                                    )
                                     else -> Crossfade(targetState = tab, animationSpec = tween(220), label = "tab") { t ->
                                         when (t) {
                                             HomeTab.Songs -> SongGrid(
@@ -1077,11 +1084,15 @@ private fun SectionTitle(text: String, count: Int) {
     )
 }
 
-/** One list for the whole library: songs, albums, artists and playlists matching the query. */
+/**
+ * One list for everything: songs, albums, artists and playlists from the library matching the
+ * query, plus streamed songs ([online]) shown in the same Songs list with the same rows.
+ */
 @Composable
 private fun SearchResults(
     query: String,
     songs: List<Song>,
+    online: List<Song>,
     albums: List<AlbumItem>,
     artists: List<ArtistItem>,
     playlists: List<Playlist>,
@@ -1094,16 +1105,26 @@ private fun SearchResults(
     onArtist: (ArtistItem) -> Unit,
     onPlaylist: (Playlist) -> Unit,
 ) {
-    val empty = songs.isEmpty() && albums.isEmpty() && artists.isEmpty() && playlists.isEmpty()
+    val empty = songs.isEmpty() && online.isEmpty() && albums.isEmpty() && artists.isEmpty() && playlists.isEmpty()
     LazyColumn(
         contentPadding = PaddingValues(start = 4.dp, end = 4.dp, top = 0.dp, bottom = bottomPad),
     ) {
         if (empty) {
             item(key = "none") { EmptyHint("No results for \"$query\"") }
         }
-        if (songs.isNotEmpty()) {
-            item(key = "h_songs") { SectionTitle("Songs", songs.size) }
+        if (songs.isNotEmpty() || online.isNotEmpty()) {
+            item(key = "h_songs") { SectionTitle("Songs", songs.size + online.size) }
             items(songs.take(20), key = { "s${it.id}" }) { song ->
+                TrackRow(
+                    song = song,
+                    index = null,
+                    subtitle = song.artist,
+                    isCurrent = st.current?.id == song.id,
+                    onClick = { onPlay(song) },
+                    onMenu = { onMenu(song) },
+                )
+            }
+            items(online, key = { "o${it.id}" }) { song ->
                 TrackRow(
                     song = song,
                     index = null,
@@ -1258,6 +1279,7 @@ private fun DialogHost(
     onDismiss: () -> Unit,
     onSwitch: (Dlg) -> Unit,
 ) {
+    val downloads by StreamDownloader.progress.collectAsState()
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
@@ -1287,7 +1309,22 @@ private fun DialogHost(
                         overflow = TextOverflow.Ellipsis,
                     )
                     Spacer(Modifier.height(8.dp))
-                    MenuItem("Add to playlist") { onSwitch(Dlg.Pick(listOf(dialog.song))) }
+                    if (dialog.song.isStreamed) {
+                        // Streamed songs become local files once downloaded; playlists hold local songs.
+                        val progress = downloads[dialog.song.id]
+                        MenuItem(
+                            when {
+                                progress == null -> "Download"
+                                progress < 0f -> "Downloading…"
+                                else -> "Downloading… ${(progress * 100).toInt()}%"
+                            }
+                        ) {
+                            if (progress == null) vm.download(dialog.song)
+                            onDismiss()
+                        }
+                    } else {
+                        MenuItem("Add to playlist") { onSwitch(Dlg.Pick(listOf(dialog.song))) }
+                    }
                     if (dialog.playlistId != null) {
                         MenuItem("Move up in playlist") {
                             vm.moveInPlaylist(dialog.playlistId, dialog.song.id, -1)
