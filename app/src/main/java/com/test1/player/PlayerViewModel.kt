@@ -14,6 +14,7 @@ import androidx.media3.session.SessionToken
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
@@ -40,6 +41,9 @@ class PlayerViewModel(private val app: Application) : AndroidViewModel(app) {
     /** File-name lookup results (title / artist / artwork) per song id, filled in the background. */
     val found = MutableStateFlow<Map<Long, CachedMetadata>>(emptyMap())
 
+    /** Streamed (NewPipe) search results for the current search query. */
+    val online = MutableStateFlow<List<Song>>(emptyList())
+
     private val _state = MutableStateFlow(PlayerState())
     val state = _state.asStateFlow()
 
@@ -49,7 +53,11 @@ class PlayerViewModel(private val app: Application) : AndroidViewModel(app) {
 
     private var lookupJob: Job? = null
     private var queueJob: Job? = null
+    private var onlineJob: Job? = null
     private val attempted = mutableSetOf<Long>()
+
+    /** Streamed songs that have been queued, so track changes can find their details. */
+    private val streamed = HashMap<Long, Song>()
 
     init { load() }
 
@@ -73,7 +81,10 @@ class PlayerViewModel(private val app: Application) : AndroidViewModel(app) {
                     }
 
                     override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
-                        songs.value.firstOrNull { it.id.toString() == item?.mediaId }?.let { playMetadata(it) }
+                        val id = item?.mediaId
+                        val next = songs.value.firstOrNull { it.id.toString() == id }
+                            ?: id?.toLongOrNull()?.let { streamed[it] }
+                        next?.let { playMetadata(it) }
                     }
                 })
                 _state.value = state.value.copy(playing = mc.isPlaying)
@@ -170,6 +181,30 @@ class PlayerViewModel(private val app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ---- online (NewPipe) search and download ----
+
+    /** Searches streamable songs for [query] (debounced). An empty / short query clears the results. */
+    fun searchOnline(query: String) {
+        onlineJob?.cancel()
+        val q = query.trim()
+        if (q.length < 2) {
+            online.value = emptyList()
+            return
+        }
+        onlineJob = viewModelScope.launch(Dispatchers.IO) {
+            delay(600)
+            val result = runCatching { NewPipeSupport.search(q) }.getOrDefault(emptyList())
+            ensureActive()
+            online.value = result
+        }
+    }
+
+    /** Tap-to-download: saves the streamed song to Music/Test1, then reloads the library. */
+    fun download(song: Song) {
+        if (!song.isStreamed) return
+        StreamDownloader.start(app, song) { load() }
+    }
+
     // ---- playback ----
 
     /** Plays [song] with [queue] as the surrounding queue (so next/previous stay inside a list). */
@@ -193,6 +228,7 @@ class PlayerViewModel(private val app: Application) : AndroidViewModel(app) {
      * seconds before anything played.
      */
     private fun startQueue(list: List<Song>, index: Int) {
+        list.forEach { if (it.isStreamed) streamed[it.id] = it }
         playMetadata(list[index])
         queueJob?.cancel()
         queueJob = viewModelScope.launch {
