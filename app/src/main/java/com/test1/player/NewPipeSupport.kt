@@ -1,6 +1,7 @@
 package com.test1.player
 
 import android.net.Uri
+import android.util.Log
 import okhttp3.OkHttpClient
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.schabi.newpipe.extractor.MediaFormat
@@ -34,6 +35,7 @@ val Song.videoId: String? get() = if (isStreamed) uri.lastPathSegment else null
 object NewPipeSupport {
     const val SCHEME = "ytstream"
     const val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; rv:128.0) Gecko/20100101 Firefox/128.0"
+    private const val TAG = "NewPipeSupport"
 
     val http: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
@@ -110,21 +112,31 @@ object NewPipeSupport {
         )
     }
 
-    /** YouTube Music song search. Blocking: call from a background thread. */
-    fun search(query: String): List<Song> {
-        init()
+    private fun searchWith(query: String, filter: String): List<Song> {
         val service = ServiceList.YouTube
-        val handler = service.searchQHFactory.fromQuery(
-            query,
-            listOf(YoutubeSearchQueryHandlerFactory.MUSIC_SONGS),
-            "",
-        )
+        val handler = service.searchQHFactory.fromQuery(query, listOf(filter), "")
         val extractor = service.getSearchExtractor(handler)
         extractor.fetchPage()
         return extractor.initialPage.items
             .filterIsInstance<StreamInfoItem>()
             .mapNotNull { it.toSong() }
             .take(20)
+    }
+
+    /**
+     * Song search. Tries YouTube Music's song filter first; if that fails or finds nothing it
+     * falls back to a normal YouTube video search so something always comes back.
+     * Blocking: call from a background thread.
+     */
+    fun search(query: String): List<Song> {
+        init()
+        val music = runCatching { searchWith(query, YoutubeSearchQueryHandlerFactory.MUSIC_SONGS) }
+            .onFailure { Log.e(TAG, "Music search failed for \"$query\"", it) }
+            .getOrDefault(emptyList())
+        if (music.isNotEmpty()) return music
+        return runCatching { searchWith(query, YoutubeSearchQueryHandlerFactory.VIDEOS) }
+            .onFailure { Log.e(TAG, "Video search failed for \"$query\"", it) }
+            .getOrDefault(emptyList())
     }
 
     fun info(videoId: String): StreamInfo {
