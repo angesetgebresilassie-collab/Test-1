@@ -23,12 +23,17 @@ object StreamDownloader {
     private val _progress = MutableStateFlow<Map<Long, Float>>(emptyMap())
     val progress: StateFlow<Map<Long, Float>> = _progress.asStateFlow()
 
+    /** Streamed songs downloaded during this session (so the UI can show a check mark). */
+    private val _done = MutableStateFlow<Set<Long>>(emptySet())
+    val done: StateFlow<Set<Long>> = _done.asStateFlow()
+
     fun start(context: Context, song: Song, onDone: () -> Unit) {
-        if (song.id in _progress.value) return
+        if (song.id in _progress.value || song.id in _done.value) return
         val app = context.applicationContext
         _progress.value = _progress.value + (song.id to 0f)
         scope.launch {
             val ok = runCatching { run(app, song) }.isSuccess
+            if (ok) _done.value = _done.value + song.id
             _progress.value = _progress.value - song.id
             if (ok) onDone()
         }
