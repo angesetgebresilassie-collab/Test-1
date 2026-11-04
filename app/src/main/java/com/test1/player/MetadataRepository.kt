@@ -21,8 +21,9 @@ private class Lookup {
  * Matching is word-based and order-independent, so "Artist - Title", "Title - Artist" and
  * names with no artist at all still find the right song, while unrelated results are rejected.
  *
- * Lyrics are cached on disk per song (see [LyricsCache]): once found they never hit the network
- * again, and a confirmed miss is not retried for a few days.
+ * Lyrics are cached on disk per song (see [LyricsCache]). Every time a track starts, the cache
+ * is checked first: lyrics that are already saved are used as they are, and a track without
+ * saved lyrics is looked up again (a remembered "not found" does not stop that).
  */
 class MetadataRepository(private val cache: MetadataCache) {
     private val lyricsCache get() = cache.lyrics
@@ -79,7 +80,10 @@ class MetadataRepository(private val cache: MetadataCache) {
             // Older versions stored lyrics inside the metadata cache: move them over.
             entry = lyricsCache.put(song.id, saved.lyrics, saved.synced)
         }
-        if (entry == null || !entry.fresh()) {
+        // Availability check first: saved lyrics are used as they are. Otherwise (nothing saved,
+        // or only a remembered "not found") the lyrics are fetched again for this track.
+        val haveLyrics = entry != null && (entry.plain != null || entry.synced != null)
+        if (!haveLyrics) {
             val st = Lookup()
             val artist = if (matched) base.artist else parsed.artist
             val found = runCatching { lyrics(artist, base.title, full, durationSec, st) }
@@ -87,7 +91,7 @@ class MetadataRepository(private val cache: MetadataCache) {
             if (found != null) {
                 entry = lyricsCache.put(song.id, found.first, found.second)
             } else if (!st.failed) {
-                // Searched properly and nothing exists: do not search again on every play.
+                // Searched properly and nothing exists right now; it is searched again on the next play.
                 entry = lyricsCache.putMiss(song.id)
             }
             // else: offline / server trouble - save nothing so it is retried next time.
