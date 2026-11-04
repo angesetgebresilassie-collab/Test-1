@@ -175,11 +175,14 @@ fun Home(vm: PlayerViewModel, granted: Boolean, onGrant: () -> Unit, onOpenSetti
     // sorting on a big library, and the lookup publishes new results every couple of seconds, so it
     // runs on a background thread and sampling keeps it from re-running on every single result.
     // Doing it on the main thread was a source of stutter while scrolling during the lookup.
+    // Streamed songs that were added to playlists are only added to songById, so playlists can
+    // show and play them; they never appear in the library lists.
     val libraryFlow = remember(vm) {
         combine(
             vm.songs,
             vm.found.sample(1500).onStart { emit(vm.found.value) },
-        ) { raw, found ->
+            vm.savedStreams,
+        ) { raw, found, saved ->
             val songs = raw.map { s ->
                 val m = found[s.id]
                 if (m == null) s else s.copy(
@@ -194,7 +197,7 @@ fun Home(vm: PlayerViewModel, granted: Boolean, onGrant: () -> Unit, onOpenSetti
             val artists = songs.groupBy { it.artist }
                 .map { (name, list) -> ArtistItem(name, list) }
                 .sortedBy { it.name.lowercase() }
-            Library(songs, albums, artists, songs.associateBy { it.id })
+            Library(songs, albums, artists, saved + songs.associateBy { it.id })
         }.flowOn(Dispatchers.Default)
     }
     val library by libraryFlow.collectAsState(initial = Library.Empty)
@@ -1280,6 +1283,7 @@ private fun DialogHost(
     onSwitch: (Dlg) -> Unit,
 ) {
     val downloads by StreamDownloader.progress.collectAsState()
+    val downloaded by StreamDownloader.done.collectAsState()
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
@@ -1309,21 +1313,22 @@ private fun DialogHost(
                         overflow = TextOverflow.Ellipsis,
                     )
                     Spacer(Modifier.height(8.dp))
+                    // Streamed songs can go into playlists too (they are remembered for that).
+                    MenuItem("Add to playlist") { onSwitch(Dlg.Pick(listOf(dialog.song))) }
                     if (dialog.song.isStreamed) {
-                        // Streamed songs become local files once downloaded; playlists hold local songs.
                         val progress = downloads[dialog.song.id]
+                        val finished = dialog.song.id in downloaded
                         MenuItem(
                             when {
+                                finished -> "Downloaded"
                                 progress == null -> "Download"
                                 progress < 0f -> "Downloading…"
                                 else -> "Downloading… ${(progress * 100).toInt()}%"
                             }
                         ) {
-                            if (progress == null) vm.download(dialog.song)
+                            if (progress == null && !finished) vm.download(dialog.song)
                             onDismiss()
                         }
-                    } else {
-                        MenuItem("Add to playlist") { onSwitch(Dlg.Pick(listOf(dialog.song))) }
                     }
                     if (dialog.playlistId != null) {
                         MenuItem("Move up in playlist") {
