@@ -20,6 +20,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
 data class PlayerState(
@@ -32,11 +33,15 @@ class PlayerViewModel(private val app: Application) : AndroidViewModel(app) {
     private val repo = LibraryRepository(app.contentResolver)
     private val meta = MetadataRepository(MetadataCache(app))
     private val store = PlaylistStore(app)
+    private val savedStore = SavedStreams(app)
 
     val songs = MutableStateFlow<List<Song>>(emptyList())
     val loaded = MutableStateFlow(false)
     val scanning = MutableStateFlow(false)
     val playlists = MutableStateFlow(store.load())
+
+    /** Streamed songs that are in a playlist (kept so the playlist can show and play them). */
+    val savedStreams = MutableStateFlow(savedStore.load())
 
     /** File-name lookup results (title / artist / artwork) per song id, filled in the background. */
     val found = MutableStateFlow<Map<Long, CachedMetadata>>(emptyMap())
@@ -56,8 +61,8 @@ class PlayerViewModel(private val app: Application) : AndroidViewModel(app) {
     private var onlineJob: Job? = null
     private val attempted = mutableSetOf<Long>()
 
-    /** Streamed songs that have been queued, so track changes can find their details. */
-    private val streamed = HashMap<Long, Song>()
+    /** Streamed songs seen in searches, queues or playlists, so track changes and playlists can find them. */
+    private val streamed = ConcurrentHashMap<Long, Song>().apply { putAll(savedStreams.value) }
 
     init { load() }
 
@@ -195,6 +200,7 @@ class PlayerViewModel(private val app: Application) : AndroidViewModel(app) {
             delay(600)
             val result = runCatching { NewPipeSupport.search(q) }.getOrDefault(emptyList())
             ensureActive()
+            result.forEach { streamed[it.id] = it }
             online.value = result
         }
     }
@@ -300,12 +306,24 @@ class PlayerViewModel(private val app: Application) : AndroidViewModel(app) {
         store.save(list)
     }
 
+    /** Streamed songs going into a playlist are saved so the playlist can rebuild them later. */
+    private fun persistStreamed(ids: Collection<Long>) {
+        val current = savedStreams.value
+        val add = ids.filter { it !in current }.mapNotNull { streamed[it] }
+        if (add.isEmpty()) return
+        val next = current + add.associateBy { it.id }
+        savedStreams.value = next
+        savedStore.save(next)
+    }
+
     fun createPlaylist(name: String, songIds: List<Long>) {
+        persistStreamed(songIds)
         val n = name.trim().ifBlank { "New Playlist" }
         savePlaylists(playlists.value + Playlist(UUID.randomUUID().toString(), n, songIds.distinct()))
     }
 
     fun addToPlaylist(playlistId: String, songId: Long) {
+        persistStreamed(listOf(songId))
         savePlaylists(
             playlists.value.map {
                 if (it.id == playlistId && songId !in it.songIds) it.copy(songIds = it.songIds + songId) else it
@@ -314,6 +332,7 @@ class PlayerViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     fun addAllToPlaylist(playlistId: String, songIds: List<Long>) {
+        persistStreamed(songIds)
         savePlaylists(
             playlists.value.map {
                 if (it.id == playlistId) it.copy(songIds = (it.songIds + songIds).distinct()) else it
