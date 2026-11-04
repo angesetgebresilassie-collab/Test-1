@@ -47,57 +47,70 @@ class MetadataRepository(private val cache: MetadataCache) {
         result
     }
 
-    suspend fun enrich(song: Song): CachedMetadata = withContext(Dispatchers.IO) {
-        val durationSec = song.durationMs / 1000
-        val parsed = FileNames.parse(song.fileName.ifBlank { song.title })
-        val full = listOfNotNull(parsed.artist, parsed.title).joinToString(" ")
+    /**
+     * Title / artist / artwork / lyrics for the song that is playing.
+     *
+     * [onBasic] is called as soon as the title, artist, artwork and any already-saved lyrics are
+     * known, BEFORE the lyrics search runs. The lyrics search can take a while (several requests,
+     * and it now runs again for every track that has no saved lyrics), and the artwork must not
+     * wait for it. The final result, including freshly fetched lyrics, is the return value.
+     */
+    suspend fun enrich(song: Song, onBasic: (CachedMetadata) -> Unit = {}): CachedMetadata =
+        withContext(Dispatchers.IO) {
+            val durationSec = song.durationMs / 1000
+            val parsed = FileNames.parse(song.fileName.ifBlank { song.title })
+            val full = listOfNotNull(parsed.artist, parsed.title).joinToString(" ")
 
-        // ---- title / artist / artwork ----
-        val saved = cache.get(song.id)
-        val matched: Boolean
-        val base: CachedMetadata
-        if (saved != null) {
-            matched = true
-            base = saved
-        } else {
-            val i = runCatching { itunes(full) }.getOrNull()
-            matched = i != null
-            base = CachedMetadata(
-                i?.title?.takeIf { it.isNotBlank() } ?: parsed.title,
-                i?.artist?.takeIf { it.isNotBlank() } ?: parsed.artist ?: song.artist,
-                i?.album?.takeIf { it.isNotBlank() } ?: song.album,
-                i?.artworkUrl,
-                null,
-                null,
-            )
-            // Only cache a real match, so unmatched / offline songs are looked up again next time.
-            if (matched) cache.put(song.id, base)
-        }
-
-        // ---- lyrics (own cache, independent of the iTunes match) ----
-        var entry = lyricsCache.get(song.id)
-        if (entry == null && saved != null && (saved.lyrics != null || saved.synced != null)) {
-            // Older versions stored lyrics inside the metadata cache: move them over.
-            entry = lyricsCache.put(song.id, saved.lyrics, saved.synced)
-        }
-        // Availability check first: saved lyrics are used as they are. Otherwise (nothing saved,
-        // or only a remembered "not found") the lyrics are fetched again for this track.
-        val haveLyrics = entry != null && (entry.plain != null || entry.synced != null)
-        if (!haveLyrics) {
-            val st = Lookup()
-            val artist = if (matched) base.artist else parsed.artist
-            val found = runCatching { lyrics(artist, base.title, full, durationSec, st) }
-                .getOrElse { st.failed = true; null }
-            if (found != null) {
-                entry = lyricsCache.put(song.id, found.first, found.second)
-            } else if (!st.failed) {
-                // Searched properly and nothing exists right now; it is searched again on the next play.
-                entry = lyricsCache.putMiss(song.id)
+            // ---- title / artist / artwork ----
+            val saved = cache.get(song.id)
+            val matched: Boolean
+            val base: CachedMetadata
+            if (saved != null) {
+                matched = true
+                base = saved
+            } else {
+                val i = runCatching { itunes(full) }.getOrNull()
+                matched = i != null
+                base = CachedMetadata(
+                    i?.title?.takeIf { it.isNotBlank() } ?: parsed.title,
+                    i?.artist?.takeIf { it.isNotBlank() } ?: parsed.artist ?: song.artist,
+                    i?.album?.takeIf { it.isNotBlank() } ?: song.album,
+                    i?.artworkUrl,
+                    null,
+                    null,
+                )
+                // Only cache a real match, so unmatched / offline songs are looked up again next time.
+                if (matched) cache.put(song.id, base)
             }
-            // else: offline / server trouble - save nothing so it is retried next time.
+
+            // ---- lyrics (own cache, independent of the iTunes match) ----
+            var entry = lyricsCache.get(song.id)
+            if (entry == null && saved != null && (saved.lyrics != null || saved.synced != null)) {
+                // Older versions stored lyrics inside the metadata cache: move them over.
+                entry = lyricsCache.put(song.id, saved.lyrics, saved.synced)
+            }
+
+            // Show the artwork and any saved lyrics right away.
+            onBasic(base.copy(lyrics = entry?.plain, synced = entry?.synced))
+
+            // Availability check first: saved lyrics are used as they are. Otherwise (nothing saved,
+            // or only a remembered "not found") the lyrics are fetched again for this track.
+            val haveLyrics = entry != null && (entry.plain != null || entry.synced != null)
+            if (!haveLyrics) {
+                val st = Lookup()
+                val artist = if (matched) base.artist else parsed.artist
+                val found = runCatching { lyrics(artist, base.title, full, durationSec, st) }
+                    .getOrElse { st.failed = true; null }
+                if (found != null) {
+                    entry = lyricsCache.put(song.id, found.first, found.second)
+                } else if (!st.failed) {
+                    // Searched properly and nothing exists right now; it is searched again on the next play.
+                    entry = lyricsCache.putMiss(song.id)
+                }
+                // else: offline / server trouble - save nothing so it is retried next time.
+            }
+            base.copy(lyrics = entry?.plain, synced = entry?.synced)
         }
-        base.copy(lyrics = entry?.plain, synced = entry?.synced)
-    }
 
     // ---- word-overlap matching ----
 
