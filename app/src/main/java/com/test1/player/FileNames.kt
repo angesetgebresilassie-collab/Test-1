@@ -2,7 +2,10 @@ package com.test1.player
 
 data class ParsedName(val artist: String?, val title: String)
 
-/** Extracts artist / title from a song's file name and strips download junk. */
+/**
+ * Extracts title / artist from a song's file name and strips download junk.
+ * File names are "Title - Artist" (title first, artist second).
+ */
 object FileNames {
     // Audio extensions, also catches doubled ones like "song.mp3.m4a".
     private val extension = Regex(
@@ -30,7 +33,8 @@ object FileNames {
         s = spaces.replace(s, " ").trim(' ', '-', '.')
         val parts = s.split(dash, limit = 2)
         return if (parts.size == 2 && parts[0].isNotBlank() && parts[1].isNotBlank()) {
-            ParsedName(parts[0].trim(), parts[1].trim())
+            // "Title - Artist"
+            ParsedName(artist = parts[1].trim(), title = parts[0].trim())
         } else {
             ParsedName(null, s.ifBlank { fileName })
         }
