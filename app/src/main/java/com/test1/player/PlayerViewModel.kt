@@ -270,7 +270,13 @@ class PlayerViewModel(private val app: Application) : AndroidViewModel(app) {
         // Show the new song immediately; metadata/lyrics fill in when they arrive.
         _state.value = cur.copy(current = s, metadata = null)
         viewModelScope.launch {
-            val m = meta.enrich(s)
+            val m = meta.enrich(s) { early ->
+                // Title, artist and artwork (plus any saved lyrics) are known: show them now, the
+                // lyrics search that may follow must not hold the artwork back.
+                if (state.value.current?.id == s.id) _state.value = state.value.copy(metadata = early)
+                if (early.artworkUrl != null) found.value = found.value + (s.id to early)
+                viewModelScope.launch { updateNotificationItem(s, early) }
+            }
             if (state.value.current?.id == s.id) _state.value = state.value.copy(metadata = m)
             // A real match (it has artwork) also feeds the lists.
             if (m.artworkUrl != null) found.value = found.value + (s.id to m)
