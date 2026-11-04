@@ -24,10 +24,13 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.SkipPrevious
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilledTonalIconButton
@@ -39,6 +42,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.LongState
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
@@ -103,8 +107,15 @@ fun NowPlayingScreen(song: Song, st: PlayerState, vm: PlayerViewModel, onClose: 
                 FilledTonalIconButton(onClick = onClose) {
                     Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Close")
                 }
-                FilledTonalButton(onClick = { showLyrics = !showLyrics }) {
-                    Text(if (showLyrics) "Player" else "Lyrics")
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    // Streamed songs can be saved to the device from here.
+                    if (song.isStreamed) DownloadButton(song, vm)
+                    FilledTonalButton(onClick = { showLyrics = !showLyrics }) {
+                        Text(if (showLyrics) "Player" else "Lyrics")
+                    }
                 }
             }
 
@@ -118,6 +129,30 @@ fun NowPlayingScreen(song: Song, st: PlayerState, vm: PlayerViewModel, onClose: 
             Spacer(Modifier.height(12.dp))
             Controls(st.playing, vm)
             Spacer(Modifier.height(8.dp))
+        }
+    }
+}
+
+/** Download icon: tap to save; shows a progress ring while downloading and a check once saved. */
+@Composable
+private fun DownloadButton(song: Song, vm: PlayerViewModel) {
+    val progress by StreamDownloader.progress.collectAsState()
+    val done by StreamDownloader.done.collectAsState()
+    val p = progress[song.id]
+    val finished = song.id in done
+    FilledTonalIconButton(onClick = { if (p == null && !finished) vm.download(song) }) {
+        when {
+            p != null && p >= 0f -> CircularProgressIndicator(
+                progress = { p },
+                modifier = Modifier.size(22.dp),
+                strokeWidth = 2.5.dp,
+            )
+            p != null -> CircularProgressIndicator(
+                modifier = Modifier.size(22.dp),
+                strokeWidth = 2.5.dp,
+            )
+            finished -> Icon(Icons.Rounded.Check, contentDescription = "Downloaded")
+            else -> Icon(Icons.Rounded.Download, contentDescription = "Download")
         }
     }
 }
