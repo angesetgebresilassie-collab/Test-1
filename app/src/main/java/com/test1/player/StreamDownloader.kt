@@ -16,7 +16,7 @@ import java.io.IOException
 /**
  * Tap-to-download for streamed songs. The audio is saved into Music/Test1 through MediaStore
  * (no storage permission needed), so once it finishes the library picks it up like any other
- * local file. Progress is 0..1, or -1 when the size is unknown.
+ * local file. Files are named "Title - Artist". Progress is 0..1, or -1 when the size is unknown.
  */
 object StreamDownloader {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -49,7 +49,7 @@ object StreamDownloader {
             ?: throw IOException("No audio stream found")
         val ext = stream.format?.suffix ?: "m4a"
         val mime = stream.format?.mimeType ?: "audio/mp4"
-        val name = "${song.artist} - ${song.title}".replace(Regex("""[\\/:*?"<>|]"""), "").trim()
+        val name = "${song.title} - ${song.artist}".replace(Regex("""[\\/:*?"<>|]"""), "").trim()
 
         val resolver = context.contentResolver
         val values = ContentValues().apply {
