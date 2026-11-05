@@ -107,7 +107,8 @@ object NewPipeSupport {
             track = 0,
             durationMs = duration.coerceAtLeast(0) * 1000,
             uri = Uri.parse("$SCHEME://stream/$vid"),
-            fileName = "$artist - $name",
+            // "Title - Artist", the same order local file names use.
+            fileName = "$name - $artist",
             artworkUrl = thumbnails.lastOrNull()?.url,
         )
     }
